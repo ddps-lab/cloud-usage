@@ -22,7 +22,7 @@ def get_usage():
             result.append(r)
     return result
 
-def generate_mm_message(result):
+def generate_slack_message(result):
     daily_total = 0.0
     temp_result = {}
     for r in result:
