@@ -47,7 +47,7 @@ def post_message(url, data):
 def lambda_handler(event, context):
     url = slack_hook_url
     report = get_usage()
-    message = generate_mm_message(report)
+    message = generate_slack_message(report)
     data = generate_curl_message(message)
     response = post_message(url, data)
     return response.status
