@@ -1,8 +1,0 @@
-# Function dependencies, for example:
-# package>=version
-google-cloud-bigquery
-flask
-pandas
-db-dtypes
-datetime
-slack_sdk
