@@ -1,0 +1,6 @@
+google-cloud-bigquery
+pandas
+db-dtypes
+datetime
+slack_sdk
+requests
