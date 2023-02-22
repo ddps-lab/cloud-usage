@@ -130,6 +130,7 @@ def post_message(usageResult):
     header = "Azure usage\nAcount: KMU@ddpslab.onmicrosoft.com\n"
     body = ""
     total = 0.0
+    usageResult = sorted(usageResult, key=lambda d: d['PreTaxCostUSD'], reverse=True)
     for i in usageResult:
         body += f"{i['ResourceGroupName']} : {i['ServiceName']} : {i['Meter']} = {i['PreTaxCostUSD']}\n"
         total += float(i['PreTaxCostUSD'])
