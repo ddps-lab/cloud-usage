@@ -4,8 +4,8 @@ import pandas
 from google.cloud import bigquery
 from datetime import datetime, timezone, timedelta
 
-
-def test_query():
+#Query
+def query():
     client = bigquery.Client()
     saved_query = """
     SELECT
@@ -14,21 +14,20 @@ def test_query():
     service.description as SERVICE,
     CAST(export_time AS DATE) as DATE,
     SUM(cost) as COST
-
-    FROM `bigquery_datatable`
+    FROM `Bigquery_datatable`
+    WHERE CAST(export_time AS DATE) =  DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
     GROUP BY DATE, SERVICE, REGION, PROJECT
-    ORDER BY PROJECT, DATE, SERVICE
+    ORDER BY PROJECT, COST DESC, SERVICE
     """
-    query_job = client.query(saved_query).to_dataframe()  # Make an API request.
-    query_job['DATE'] = query_job['DATE'].astype(str)
+    query_result = client.query(saved_query).to_dataframe()  # Make an API request.
+    query_result['DATE'] = query_result['DATE'].astype(str)
+    query_result = query_result.reset_index()
+    total_bill = query_result['COST'].sum()
+    query_result = query_result.drop(['DATE','index'], axis = 1).astype(str).to_dict()
 
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    yesterday_usage = query_job[query_job['DATE'] == yesterday].reset_index()
-    yesterday_total_bill = yesterday_usage['COST'].sum()
-    yesterday_usage = yesterday_usage.drop(['DATE','index'], axis = 1).astype(str).to_dict()
+    return query_result, total_bill
 
-    return yesterday_usage, yesterday_total_bill
-
+# Convert Query result dict to string
 def converter(res_dict):
     res_str = ""
     for i in range(len(res_dict['PROJECT'])):
@@ -43,8 +42,9 @@ def converter(res_dict):
 
 url = 'webhookurl'
 
+#Slack Bot
 def bot():
-    usage, bill = test_query()
+    usage, bill = query()
     usage = converter(usage)
 
     message = {
@@ -63,6 +63,6 @@ def bot():
         print('Error sending Slack message: {}'.format(response.text))
     return usage
 
-def hello_world(request):
+def entry_point(request):
     request_json = request.get_json()
     return bot()
