@@ -2,14 +2,15 @@ from google.oauth2 import service_account
 from google.cloud import bigquery
 from base64 import b64decode
 
+import os
 import boto3
 import requests
 import json
 
-kms = boto3.client('kms')
+webhook_url = os.environ['webhook']
+gcp_key = json.loads(os.environ['credential'])
 
-# 인증 정보 생성
-credentials = service_account.Credentials.from_service_account_file(key_path)
+credentials = service_account.Credentials.from_service_account_file(gcp_key)
 
 def query():
     client = bigquery.Client(credentials=credentials, project=credentials.project_id)
@@ -50,7 +51,7 @@ def converter(res_dict):
                 res_str = res_str + val[i] + " : "
     return res_str
 
-url = 'WebHook URL'
+url = webhook_url
 
 #Slack Bot
 def bot():
