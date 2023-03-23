@@ -5,6 +5,7 @@ from base64 import b64decode
 import os
 import boto3
 import requests
+import tempfile
 import json
 
 webhook_url = os.environ['webhook']
