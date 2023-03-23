@@ -1,9 +1,7 @@
 from google.oauth2 import service_account
 from google.cloud import bigquery
-from base64 import b64decode
 
 import os
-import boto3
 import requests
 import tempfile
 import json
