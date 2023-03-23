@@ -82,5 +82,5 @@ def bot():
         print('Error sending Slack message: {}'.format(response.text))
     return usage
 
-def lambda_handler():
+def lambda_handler(event, context):
     return bot()
