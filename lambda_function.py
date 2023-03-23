@@ -8,7 +8,7 @@ import requests
 import json
 
 webhook_url = os.environ['webhook']
-gcp_key = json.loads(os.environ['credential'])
+gcp_key = os.environ['credential']
 
 credentials = service_account.Credentials.from_service_account_file(gcp_key)
 
