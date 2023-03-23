@@ -8,9 +8,16 @@ import requests
 import json
 
 webhook_url = os.environ['webhook']
-gcp_key = os.environ['credential']
+gcp_key_json = os.environ['credential']
 
-credentials = service_account.Credentials.from_service_account_file(gcp_key)
+gcp_key_dict = json.loads(gcp_key_json)
+
+with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
+    json.dump(gcp_key_dict, temp)
+    temp_path = temp.name
+
+credentials = service_account.Credentials.from_service_account_file(temp_path)
+os.remove(temp_path)
 
 def query():
     client = bigquery.Client(credentials=credentials, project=credentials.project_id)
