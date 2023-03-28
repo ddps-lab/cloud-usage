@@ -18,7 +18,8 @@ with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp:
 credentials = service_account.Credentials.from_service_account_file(temp_path)
 os.remove(temp_path)
 
-def query():
+#sending query to gcp_bigquery service / get query result
+def query_gcp_price():
     client = bigquery.Client(credentials=credentials, project=credentials.project_id)
     saved_query = """
     SELECT
@@ -42,8 +43,8 @@ def query():
 
     return query_result, total_bill
 
-# Convert Query result dict to string
-def converter(res_dict):
+# Convert Query result to string
+def Query_result_converter(res_dict):
     res_str = ""
     for i in range(len(res_dict['PROJECT'])):
         for col, val in res_dict.items():
@@ -59,10 +60,10 @@ def converter(res_dict):
 
 url = webhook_url
 
-#Slack Bot
-def bot():
-    usage, bill = query()
-    usage = converter(usage)
+#Calling Slack Bot to send message
+def slack_bot():
+    usage, bill = query_gcp_price()
+    usage = Query_result_converter(usage)
 
     message = {
         'text': f"GCP Usage\nDaily Total: {bill}(KRW)\n{usage}"
@@ -81,4 +82,4 @@ def bot():
     return usage
 
 def lambda_handler(event, context):
-    return bot()
+    return slack_bot()
