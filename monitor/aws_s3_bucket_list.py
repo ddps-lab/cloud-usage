@@ -104,9 +104,9 @@ def generate_mm_message(bucket_result_list, bucket_name_max, version):
 
 # 슬랙으로 보낼 메세지 payload 형식을 결정합니다.
 def generate_curl_message(message, meg_type):
-    if meg_type == 'h':
+    if meg_type == True:
         payload = {"text": message}
-    elif meg_type == 'm':
+    else:
         payload = {"text": f'```{message}```'}
     return json.dumps(payload).encode("utf-8")
 
@@ -134,7 +134,7 @@ def lambda_handler(event, context):
 
     if version == 2:
         bucket_result_list = get_s3_bucket(version)
-        target_lambda_arn = 'arn:aws:lambda:us-west-1:741926482963:function:yrkim-lambda-test'
+        target_lambda_arn = ''
     
         lambda_client = boto3.client('lambda')
         response = lambda_client.invoke(
@@ -146,12 +146,11 @@ def lambda_handler(event, context):
         bucket_result_list, bucket_name_max = get_s3_bucket(version)
         header, messages = generate_mm_message(bucket_result_list, bucket_name_max, version)
     
-        data = generate_curl_message(header, 'h')
+        data = generate_curl_message(header, True)
         response = post_message(url, data)
     
         for meg in messages:
-            data = generate_curl_message(meg, 'm')
+            data = generate_curl_message(meg, False)
             response = post_message(url, data)
         
         return response.status
-        #return header, messages, len(bucket_result_list)
