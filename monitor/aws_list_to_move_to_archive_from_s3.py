@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import os
 
 SLACK_URL = os.environ['SLACK_URL']
+Target_Lambda = os.environ['Target_Lambda_ARN']
 
 try:
     DEADLINE_MONTHS = int(os.environ['MONTHS'])
@@ -14,7 +15,7 @@ deadline = datetime.now() - timedelta(days=DEADLINE_MONTHS*30)
 
 
 # s3 버킷을 불러오고 리스트로 목록을 만듭니다.
-def get_s3_bucket():
+def get_final_archive_list_from_s3():
     s3_client = boto3.client('s3')
     bucket_list = s3_client.list_buckets()
     bucket_result_list = []
@@ -62,12 +63,12 @@ def get_s3_bucket():
 def lambda_handler(event, context):
     url = SLACK_URL
     
-    bucket_result_list = get_s3_bucket()
-    target_lambda_arn = ''
+    bucket_result_list = get_final_archive_list_from_s3()
+    target_lambda_arn = Target_Lambda
     
     lambda_client = boto3.client('lambda')
     response = lambda_client.invoke(
         FunctionName=target_lambda_arn,
         Payload=json.dumps(bucket_result_list)
     )
-    return "successfully", len(bucket_result_list)
+    return "The Archive List was sent in your Lambda Function. Check the your Lambda function event."

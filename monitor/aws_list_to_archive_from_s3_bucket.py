@@ -14,7 +14,7 @@ deadline = datetime.now() - timedelta(days=DEADLINE_MONTHS*30)
 
 
 # s3 버킷을 불러오고 리스트로 목록을 만듭니다.
-def get_s3_bucket():
+def get_archive_list_from_s3():
     s3_client = boto3.client('s3')
     bucket_list = s3_client.list_buckets()
     bucket_result_list = []
@@ -58,7 +58,7 @@ def get_s3_bucket():
                 
 
 # 콘솔 또는 슬랙으로 보낼 메세지를 생성합니다.
-def generate_mm_message(bucket_result_list, bucket_name_max):
+def generate_message(bucket_result_list, bucket_name_max):
     messages = []
     header = "S3 Bucket List to be Archived - [" + str(len(bucket_result_list)) + " buckets]\n"
     crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
@@ -102,8 +102,8 @@ def post_message(url, data):
 def lambda_handler(event, context):
     url = SLACK_URL
 
-    bucket_result_list, bucket_name_max = get_s3_bucket()
-    header, messages = generate_mm_message(bucket_result_list, bucket_name_max)
+    bucket_result_list, bucket_name_max = get_archive_list_from_s3()
+    header, messages = generate_message(bucket_result_list, bucket_name_max)
     
     data = generate_curl_message(header, True)
     response = post_message(url, data)
@@ -112,4 +112,4 @@ def lambda_handler(event, context):
         data = generate_curl_message(meg, False)
         response = post_message(url, data)
         
-    return response.status
+    return "The Archive List was successfully sent in a Slack. Check the Slack message."
