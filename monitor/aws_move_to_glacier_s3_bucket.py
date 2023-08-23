@@ -113,9 +113,7 @@ def post_message(url, data):
 def lambda_handler(event, context):
     url = SLACK_URL
 
-    # go_to_glacier_bucket_list = get_final_archive_list_from_s3()
-    go_to_glacier_bucket_list = ['cwnam', 'cwnam2', 'cwnam3', 'cwnam4']  #테스트용 버킷 리스트
-    
+    go_to_glacier_bucket_list = get_final_archive_list_from_s3()
     result_list, bucket_name_max = go_to_glacier(go_to_glacier_bucket_list)
     header, messages = generate_message(result_list, bucket_name_max)
     
