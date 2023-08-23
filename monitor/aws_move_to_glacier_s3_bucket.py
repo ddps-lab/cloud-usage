@@ -52,29 +52,23 @@ def go_to_glacier(go_to_glacier_bucket_list):
     for bucket in all_bucket_list:
         bucket_name = bucket["Name"]
         if bucket_name in go_to_glacier_bucket_list:
-            print(f"[{bucket_name}]")
             bucket_name_max = max(bucket_name_max, len(bucket_name))
             bucket_size = 0
 
             objects = s3_client.list_objects_v2(Bucket=bucket_name)
-            if objects :
+            if 'Contents' in objects :   # 아무것도 없는 빈 버킷은 glacier 이동X
                 for obj in objects.get('Contents', []):
-                        object_key = obj['Key']
-                        object_size = obj['Size']
-                        object_storage_class = obj.get('StorageClass', 'STANDARD')
-                        if object_size is not None:
-                            bucket_size += object_size
-                        if object_storage_class == 'GLACIER':
-                            print(f'({object_key} is already in Glacier storage class.)')
-                        else:     
-                            print(f'({object_key} will be moved to Glacier...)')
-                            s3_client.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': object_key}, Key=object_key, StorageClass='GLACIER')
-                        print(object_key, object_size, object_storage_class)
+                    object_key = obj['Key']
+                    object_size = obj['Size']
+                    object_storage_class = obj.get('StorageClass', 'STANDARD')
+                    if object_size is not None:
+                        bucket_size += object_size
+                    if object_storage_class != 'GLACIER':
+                        s3_client.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': object_key}, Key=object_key, StorageClass='GLACIER')
 
-            bucket_size = round(bucket_size/(1000*1000), 2)  # MB 단위
-            print("Total: ", bucket_size, "MB\n\n")
-            result = [bucket_name, bucket_size]
-            result_list.append(result)
+                bucket_size = round(bucket_size/(1000*1000), 2)  # MB 단위
+                result = [bucket_name, bucket_size]
+                result_list.append(result)
     return result_list, bucket_name_max
 
 def generate_message(go_to_glacier_bucket_list, bucket_name_max):
@@ -120,7 +114,7 @@ def lambda_handler(event, context):
     url = SLACK_URL
 
     # go_to_glacier_bucket_list = get_final_archive_list_from_s3()
-    go_to_glacier_bucket_list = ['cwnam', 'cwnam2', 'cwnam3']  #테스트용 버킷 리스트
+    go_to_glacier_bucket_list = ['cwnam', 'cwnam2', 'cwnam3', 'cwnam4']  #테스트용 버킷 리스트
     
     result_list, bucket_name_max = go_to_glacier(go_to_glacier_bucket_list)
     header, messages = generate_message(result_list, bucket_name_max)
