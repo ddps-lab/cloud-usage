@@ -74,14 +74,15 @@ def go_to_glacier(go_to_glacier_bucket_list):
 
 def generate_message(go_to_glacier_bucket_list, bucket_name_max):
     messages = []
-    header = "List of S3 Buckets successfully moved to Glacier - [" + str(len(go_to_glacier_bucket_list)) + " buckets]\n"
+    len_list = len(go_to_glacier_bucket_list)
+    header = "List of S3 Buckets successfully moved to Glacier - [" + str(len_list) + " buckets]\n"
     crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     header += (crrent_time+"\n")
     
     if bucket_name_max < 11:
         bucket_name_max = 11
    
-    if len(go_to_glacier_bucket_list) == 0:
+    if len_list == 0:
         message = "\nThere are NO Buckets moved to Glacier.\n"
     else:
         message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12}'
