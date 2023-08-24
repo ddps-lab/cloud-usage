@@ -69,7 +69,8 @@ def go_to_glacier(go_to_glacier_bucket_list):
                 bucket_size = round(bucket_size/(1000*1000), 2)  # MB 단위
                 result = [bucket_name, bucket_size]
                 result_list.append(result)
-    return result_list, bucket_name_max
+    ordered_result_list = sorted(result_list, key=lambda x: x[1], reverse=True)
+    return ordered_result_list, bucket_name_max
 
 def generate_message(go_to_glacier_bucket_list, bucket_name_max):
     messages = []
@@ -80,18 +81,21 @@ def generate_message(go_to_glacier_bucket_list, bucket_name_max):
     if bucket_name_max < 11:
         bucket_name_max = 11
    
-    message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12}'
-    count = 1
-    for item in go_to_glacier_bucket_list:
-        if item[1] >= 1000:
-            item[1] = str(round(item[1]/1000, 2)) + " GB"
-        else:
-            item[1] = str(item[1]) + " MB"
-        message += f'\n{count:>2}. {item[0]:{bucket_name_max+2}} {item[1]:12}'
-        count += 1
-        if len(message) > 3800:
-            messages.append(message)
-            message = ""
+    if len(go_to_glacier_bucket_list) == 0:
+        message = "\nThere are NO Buckets moved to Glacier.\n"
+    else:
+        message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12}'
+        count = 1
+        for item in go_to_glacier_bucket_list:
+            if item[1] >= 1000:
+                item[1] = str(round(item[1]/1000, 2)) + " GB"
+            else:
+                item[1] = str(item[1]) + " MB"
+            message += f'\n{count:>2}. {item[0]:{bucket_name_max+2}} {item[1]:12}'
+            count += 1
+            if len(message) > 3850:
+                messages.append(message)
+                message = ""
     messages.append(message)
     return header, messages
     
