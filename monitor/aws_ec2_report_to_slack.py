@@ -1,28 +1,28 @@
 import boto3
 from datetime import datetime, timezone, timedelta
 import urllib.request, urllib.parse, json
-import os, re
+import os, re, sys
 
 
 SLACK_URL = os.environ['SLACK_URL']
 
 # enable instance management - 모든 리전의 인스턴스와 볼륨을 조회한 후 리스트로 반환한다.
-def enable_instance_management(current_time):
+def enable_instance_management(current_time, head_message):
     try:
         # regions 검색용 Boto3 EC2 클라이언트 생성
         ec2_client = boto3.client('ec2')
         regions = [ region['RegionName'] for region in ec2_client.describe_regions()['Regions'] ]
 
-        running_instances, stopped_instances = get_instance_items(current_time, regions)
-        volume_list = get_volume_items(current_time, regions)
+        running_instances, stopped_instances = get_instance_items(current_time, head_message, regions)
+        volume_list = get_volume_items(current_time, head_message, regions)
 
         return running_instances, stopped_instances, volume_list
     except Exception as e:
-        print(f"오류가 발생했습니다.\n{e}")
+        send_exception_message(head_message, "오류가 발생했습니다.\n", e)
 
 
 # get instance items - 모든 리전의 인스턴스를 조회한 후 리스트로 반환한다.
-def get_instance_items(current_time, regions):
+def get_instance_items(current_time, head_message, regions):
     try:
         running_instances = []
         stopped_instances = []
@@ -43,7 +43,6 @@ def get_instance_items(current_time, regions):
                             break
 
                     # 인스턴스 정보 임시 저장
-                    instance_id = instance['InstanceId']
                     instance_type = instance['InstanceType']
                     instance_state = instance['State']['Name']
                     if instance_state == 'running':
@@ -62,7 +61,7 @@ def get_instance_items(current_time, regions):
                             volume_Id = mapping['Ebs']['VolumeId']
 
                     # 저장항목 변수화
-                    instance_dsc = {'region':ec2_region, 'name':instance_name, 'id':instance_id, 'type':instance_type, 'volume':volume_Id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
+                    instance_dsc = {'region':ec2_region, 'name':instance_name, 'type':instance_type, 'volume':volume_Id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
 
                     # 인스턴스 정보 리스트로 저장
                     if instance_state == 'running':
@@ -76,11 +75,11 @@ def get_instance_items(current_time, regions):
 
         return sorted_running_instances, sorted_stopped_instances
     except Exception as e:
-        print(f"인스턴스 관리 실패\n{e}")
+        send_exception_message(head_message, "인스턴스 관리 실패\n", e)
 
 
 # get volume items - 모든 리전의 볼륨을 조회한 후 리스트로 반환한다.
-def get_volume_items(current_time, regions):
+def get_volume_items(current_time, head_message, regions):
     try:
         orphaned_volumes = []
 
@@ -102,16 +101,14 @@ def get_volume_items(current_time, regions):
 
         return sorted_orphaned_volumes
     except Exception as e:
-        print(f"볼륨 관리 실패\n{e}")
+        send_exception_message(head_message, "볼륨 관리 실패\n", e)
 
 
 # create message - 슬랙으로 보낼 메세지를 생성한다.
-def create_message(cur_time, running_list, stopped_list, volume_list):
+def create_message(head_message, running_list, stopped_list, volume_list):
     try:
-        message = "Account: bigdata@kookmin.ac.kr\n"
-        current_time = (cur_time + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M')
-        message += (current_time+"\n")
-        
+        message = head_message
+
         if len(running_list) > 0:
             message += (f"\n[Running EC2 Instances] ({len(running_list)})\n")
             for running_instance in running_list:
@@ -139,10 +136,10 @@ def create_message(cur_time, running_list, stopped_list, volume_list):
 
         return message
     except Exception as e:
-        print(f"메세지 생성 오류\n{e}")
+        send_exception_message(head_message, "메세지 생성 오류\n", e)
 
 
-# generate curl message - # 슬랙으로 보낼 메세지 payload 형식을 결정한다.
+# generate curl message - 슬랙으로 보낼 메세지 payload 형식을 결정한다.
 def generate_curl_message(message):
     payload = {"text": message}
     return json.dumps(payload).encode("utf-8")
@@ -155,16 +152,28 @@ def post_message(url, data):
     return urllib.request.urlopen(req, data)
 
 
+# send exception message - 오류로 인해 발생한 메세지를 슬랙으로 보내고 실행을 종료한다.
+def send_exception_message(head_message, exception_message, e):
+    message = (f"{head_message}{exception_message}{e}")
+
+    data = generate_curl_message(message)
+    response = post_message(SLACK_URL, data)
+    sys.exit()
+
+
 # lambda handler - 람다 함수를 실행한다.
 def lambda_handler(event, context):
-    url = SLACK_URL
-    
     current_time = datetime.now(timezone.utc)
-    running_instances, stopped_instances, orphaned_volumes  = enable_instance_management(current_time)
-    message = create_message(current_time, running_instances, stopped_instances, orphaned_volumes)
+
+    head_message = "Account: bigdata@kookmin.ac.kr\n"
+    cur_time = (current_time + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M')
+    head_message += (cur_time+"\n")
+    
+    running_instances, stopped_instances, orphaned_volumes  = enable_instance_management(current_time, head_message)
+    message = create_message(head_message, running_instances, stopped_instances, orphaned_volumes)
     
     data = generate_curl_message(message)
-    response = post_message(url, data)
+    response = post_message(SLACK_URL, data)
     
     return (f"{response.status}! 인스턴스 관리에 성공하였습니다. 총 인스턴스는 {len(running_instances)+len(stopped_instances)}개 입니다.")
     
