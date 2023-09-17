@@ -30,7 +30,7 @@ def get_instance_items(current_time, regions):
         # 리전 별로 인스턴스 항목 추출을 위해 ec2 client 실행
         for ec2_region in regions:
             ec2_list = boto3.client('ec2', region_name=ec2_region)
-            instances = ec2_list.describe_instances()
+            instances = ec2_list.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running', 'stopped']}])
 
             # 리전 속 인스턴스 정보 출력
             for reservation in instances['Reservations']:
@@ -62,7 +62,7 @@ def get_instance_items(current_time, regions):
                             volume_Id = mapping['Ebs']['VolumeId']
 
                     # 저장항목 변수화
-                    instance_dsc = {'region':ec2_region, 'name':instance_name, 'type':instance_type, 'volume':volume_Id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
+                    instance_dsc = {'region':ec2_region, 'name':instance_name, 'id':instance_id, 'type':instance_type, 'volume':volume_Id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
 
                     # 인스턴스 정보 리스트로 저장
                     if instance_state == 'running':
@@ -82,27 +82,25 @@ def get_instance_items(current_time, regions):
 # get volume items - 모든 리전의 볼륨을 조회한 후 리스트로 반환한다.
 def get_volume_items(current_time, regions):
     try:
-        available_volumes = []
+        orphaned_volumes = []
 
         # 리전 별로 volume 확인을 위해 clien 실행
         for volume_region in regions:
             volume_list = boto3.client('ec2', region_name=volume_region)
-            volumes = volume_list.describe_volumes()
+            volumes = volume_list.describe_volumes(Filters=[{'Name': 'status', 'Values': ['available']}])
 
             # 각 EBS 볼륨의 상태 확인
             for volume in volumes['Volumes']:
-                state = volume['State']
-                if state == 'available':
-                    volume_id = volume['VolumeId']
-                    size_gb = volume['Size']
-                    volume_type = volume['VolumeType']
-                    snapshot_id = volume['SnapshotId']
-                    created_time = current_time - volume['CreateTime'].replace(tzinfo=timezone.utc)
-                    available_volumes.append({'region': volume_region, 'id':volume_id, 'type':volume_type, 'size':size_gb, 'snapshot':snapshot_id, 'time':created_time.days})
+                volume_id = volume['VolumeId']
+                size_gb = volume['Size']
+                volume_type = volume['VolumeType']
+                snapshot_id = volume['SnapshotId']
+                created_time = current_time - volume['CreateTime'].replace(tzinfo=timezone.utc)
+                orphaned_volumes.append({'region': volume_region, 'id':volume_id, 'type':volume_type, 'size':size_gb, 'snapshot':snapshot_id, 'time':created_time.days})
 
-        sorted_available_volumes = sorted(available_volumes, key=lambda x: (x['time']), reverse=True)
+        sorted_orphaned_volumes = sorted(orphaned_volumes, key=lambda x: (x['time']), reverse=True)
 
-        return available_volumes
+        return sorted_orphaned_volumes
     except Exception as e:
         print(f"볼륨 관리 실패\n{e}")
 
@@ -135,7 +133,7 @@ def create_message(cur_time, running_list, stopped_list, volume_list):
                     message += (meg+" 정지 중 :large_brown_circle:\n")
         
         if len(volume_list) > 0:
-            message += (f"\n[Available volumes] ({len(volume_list)})\n")
+            message += (f"\n[Orphaned Volumes] ({len(volume_list)})\n")
             for volume in volume_list:
                 message += (f"{volume['region']} / {volume['id']} / {volume['type']} / {volume['size']} / {volume['snapshot']} ~ {volume['time']}일 동안 존재 :warning:\n")
 
@@ -162,11 +160,11 @@ def lambda_handler(event, context):
     url = SLACK_URL
     
     current_time = datetime.now(timezone.utc)
-    running_instances, stopped_instances, available_volumes = enable_instance_management(current_time)
-    message = create_message(current_time, running_instances, stopped_instances, available_volumes)
+    running_instances, stopped_instances, orphaned_volumes  = enable_instance_management(current_time)
+    message = create_message(current_time, running_instances, stopped_instances, orphaned_volumes)
     
     data = generate_curl_message(message)
     response = post_message(url, data)
     
-    return (f"인스턴스 관리에 성공하였습니다. 총 인스턴스는 {len(running_instances)+len(stopped_instances)}개 입니다.")
+    return (f"{response.status}! 인스턴스 관리에 성공하였습니다. 총 인스턴스는 {len(running_instances)+len(stopped_instances)}개 입니다.")
     
