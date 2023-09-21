@@ -1,28 +1,29 @@
 import boto3
 from datetime import datetime, timezone, timedelta
 import urllib.request, urllib.parse, json
-import os, re, sys
+import os, re
 
 
 SLACK_URL = os.environ['SLACK_URL']
+save_exception_message = []
 
 # enable instance management - 모든 리전의 인스턴스와 볼륨을 조회한 후 리스트로 반환한다.
-def enable_instance_management(current_time, head_message):
+def enable_instance_management(current_time):
     try:
         # regions 검색용 Boto3 EC2 클라이언트 생성
         ec2_client = boto3.client('ec2')
         regions = [ region['RegionName'] for region in ec2_client.describe_regions()['Regions'] ]
 
-        running_instances, stopped_instances = get_instance_items(current_time, head_message, regions)
-        volume_list = get_volume_items(current_time, head_message, regions)
+        running_instances, stopped_instances = get_instance_items(current_time, regions)
+        volume_list = get_volume_items(current_time, regions)
 
         return running_instances, stopped_instances, volume_list
     except Exception as e:
-        send_exception_message(head_message, "오류가 발생했습니다.\n", e)
+        return send_exception_message("인스턴스 매니저 실행 실패\n", e)
 
 
 # get instance items - 모든 리전의 인스턴스를 조회한 후 리스트로 반환한다.
-def get_instance_items(current_time, head_message, regions):
+def get_instance_items(current_time, regions):
     try:
         running_instances = []
         stopped_instances = []
@@ -75,11 +76,11 @@ def get_instance_items(current_time, head_message, regions):
 
         return sorted_running_instances, sorted_stopped_instances
     except Exception as e:
-        send_exception_message(head_message, "인스턴스 관리 실패\n", e)
+        return send_exception_message("인스턴스 관리 실패\n", e)
 
 
 # get volume items - 모든 리전의 볼륨을 조회한 후 리스트로 반환한다.
-def get_volume_items(current_time, head_message, regions):
+def get_volume_items(current_time, regions):
     try:
         orphaned_volumes = []
 
@@ -101,7 +102,7 @@ def get_volume_items(current_time, head_message, regions):
 
         return sorted_orphaned_volumes
     except Exception as e:
-        send_exception_message(head_message, "볼륨 관리 실패\n", e)
+        return send_exception_message("볼륨 관리 실패\n", e)
 
 
 # create message - 슬랙으로 보낼 메세지를 생성한다.
@@ -136,7 +137,7 @@ def create_message(head_message, running_list, stopped_list, volume_list):
 
         return message
     except Exception as e:
-        send_exception_message(head_message, "메세지 생성 오류\n", e)
+        return send_exception_message("메세지 생성 실패\n", e)
 
 
 # generate curl message - 슬랙으로 보낼 메세지 payload 형식을 결정한다.
@@ -153,12 +154,10 @@ def post_message(url, data):
 
 
 # send exception message - 오류로 인해 발생한 메세지를 슬랙으로 보내고 실행을 종료한다.
-def send_exception_message(head_message, exception_message, e):
-    message = (f"{head_message}{exception_message}{e}")
-
-    data = generate_curl_message(message)
-    response = post_message(SLACK_URL, data)
-    sys.exit()
+def send_exception_message(exception_message, e):
+    if len(save_exception_message) == 0:
+        save_exception_message.append([exception_message, e])
+    return
 
 
 # lambda handler - 람다 함수를 실행한다.
@@ -169,11 +168,20 @@ def lambda_handler(event, context):
     cur_time = (current_time + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M')
     head_message += (cur_time+"\n")
     
-    running_instances, stopped_instances, orphaned_volumes  = enable_instance_management(current_time, head_message)
-    message = create_message(head_message, running_instances, stopped_instances, orphaned_volumes)
-    
+    try:
+        running_instances, stopped_instances, orphaned_volumes  = enable_instance_management(current_time)
+        message = create_message(head_message, running_instances, stopped_instances, orphaned_volumes)
+        result = (f"{response.status}! 인스턴스 관리에 성공하였습니다. 총 인스턴스는 {len(running_instances)+len(stopped_instances)}개 입니다.")
+		
+        if len(save_exception_message) > 0:
+            raise Exception()
+
+    except Exception as e:
+        message = head_message
+        message += save_exception_message[0][0] + str(save_exception_message[0][1])
+        result = (f"{save_exception_message[0][1]}로 인해 문제가 발생했습니다. : {save_exception_message[0][0]}")
+
     data = generate_curl_message(message)
     response = post_message(SLACK_URL, data)
     
-    return (f"{response.status}! 인스턴스 관리에 성공하였습니다. 총 인스턴스는 {len(running_instances)+len(stopped_instances)}개 입니다.")
-    
+    return result
