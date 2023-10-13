@@ -4,20 +4,20 @@
 
 ## 1. s3 management files
 ### aws_s3_standard_report.py
-- 서울 리전의 람다 함수, `usage-s3_standard_report` 의 파일입니다.
+- 서울 리전의 람다 함수, `usage_s3_standard_report` 의 파일입니다.
 - 서울 리전의 이벤트 브릿지인 `report_s3_bucket` 가 트리거로 존재합니다.
 - 매월 1일 오전 10시마다 s3에 존재하는 standard class인 버킷의 정보를 슬랙으로 전송합니다.
 - 버킷의 이름, standard class의 크기, 최근 액세스한 날을 확인할 수 있습니다.
 
 ### aws_s3_archiving_report.py
-- 서울 리전의 람다 함수, `usage-s3_archiving_report` 의 파일입니다.
+- 서울 리전의 람다 함수, `usage_s3_archiving_report` 의 파일입니다.
 - 서울 리전의 이벤트 브릿지인 `report_s3_archiving` 가 트리거로 존재합니다.
 - 짝수월 1일, 5일 오전 10시 5분마다 glacier class로 이동해야 하는 버킷의 정보를 슬랙으로 전송합니다.
 - 버킷의 이름, standard class의 크기, 최근 액세스한 날을 확인할 수 있습니다.
 - 기본 값으로 6개월이 지정되어 있어, 최근 6개월 간 액세스하지 않은 버킷이 glacier class로 이동할 버킷에 선정됩니다.
 
 ### aws_auto_s3_archiving.py
-- 서울 리전의 스냅샷 안에 존재하는 `auto_s3_archiving.py` 의 파일입니다.
+- 서울 리전의 스냅샷 안에 존재하는 `aws_auto_s3_archiving.py` 의 파일입니다.
 - 짝수월 6일 오전 10시에 다음 작업을 실행하여 s3 버킷을 관리합니다.
 - 스냅샷을 통해 AMI와 인스턴스를 생성한 후 s3 버킷을 자동으로 관리합니다.
 - 최소 2분 정도의 시간이 소요됩니다.
@@ -26,7 +26,7 @@
 
 ## 2. auto s3 archiving 방법
 ### 스냅샷을 이용하여 AMI 생성
-1. 서울 리전 스냅샷에 존재하는 {Name : `usage-s3-management`, Description : `usage-s3-management(auto-s3-archiving-snapshot)`} 스냅샷을 선택합니다.
+1. 서울 리전 스냅샷에 존재하는 {Name : `usage_s3-management`, Description : `usage_s3-management(aws_auto_s3_archiving_snapshot)`} 스냅샷을 선택합니다.
 2. `Actions` > `Create image from snapshot` 을 클릭합니다.
 3. Image name 과 Description 을 작성합니다. (아래는 예시입니다.)
 - Image name : s3-management
@@ -39,7 +39,7 @@
 3. 이후 인스턴스를 편한 방법으로 접속하십시오.
 
 ### 인스턴스 내에서 s3 버킷 관리
-1. 인스턴스 내에 존재하는 `auto_s3_archiving.py` 내의 다음 내용을 찾아 수정합니다.
+1. 인스턴스 내에 존재하는 `aws_auto_s3_archiving.py` 내의 다음 내용을 찾아 수정합니다.
 ```
     # AWS 인증 정보 - 이곳에 사용자 정보를 반드시 입력하세요.
     aws_access_key_id = ''
@@ -62,7 +62,7 @@
 2. 다음 코드를 실행하여 s3 버킷을 관리합니다.
 ```
 ./environment.sh
-python3 auto_s3_archiving.py
+python3 aws_auto_s3_archiving.py
 ```
 
 3. 작업이 종료된 것을 확인 후 s3 버킷 관리를 종료합니다.
