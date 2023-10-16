@@ -1,5 +1,5 @@
 # s3 management mennual
-### 이 문서는 aws의 s3 버킷을 관리하기 위한 메뉴얼입니다.
+### 이 문서는 aws의 s3 버킷을 관리하기 위한 설명서입니다.
 
 
 ## 1. s3 management files
