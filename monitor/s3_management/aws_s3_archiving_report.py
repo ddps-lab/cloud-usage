@@ -59,7 +59,7 @@ def get_archiving_bucket():
 def created_message(archiving_list, bucket_name_max):
     messages = []
     header = ""
-    header = "S3 Bucket List to be Archived - [" + str(len(archiving_list)) + " buckets]\n"
+    header = "*S3 Bucket List to be Archived* - [" + str(len(archiving_list)) + " buckets]\n"
     crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     header += (crrent_time+"\n")
 

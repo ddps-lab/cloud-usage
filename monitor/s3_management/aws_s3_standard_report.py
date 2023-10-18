@@ -43,6 +43,9 @@ def get_s3_bucket():
         
         if bucket_class == "STANDARD":
             standard_list.append([bucket_name, bucket_size, last_accessed_date])
+        elif bucket_class == "GLACIER" and last_accessed_date == "N/A":
+            standard_list.append([bucket_name, bucket_size, last_accessed_date])
+            
     ordered_standard_list = sorted(standard_list, key=lambda x: x[1], reverse=True)
     return ordered_standard_list, bucket_name_max
                
@@ -50,7 +53,7 @@ def get_s3_bucket():
 # created message : standard bucket을 메세지로 생성
 def created_message(standard_list, bucket_name_max):
     messages = []
-    header = "S3 Bucket List - [" + str(len(standard_list)) + " buckets]\n"
+    header = "*S3 Bucket List* - [" + str(len(standard_list)) + " buckets]\n"
     crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     header += (crrent_time+"\n")
    
@@ -93,6 +96,6 @@ def lambda_handler(event, context):
     response = slack_message(header, True, url)
     
     for meg in messages:
-        response = slack_message(meg,False, url)
+        response = slack_message(meg, False, url)
         
     return "All bucket list of s3 was sent in a slack. Check the Slack message."
