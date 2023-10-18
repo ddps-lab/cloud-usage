@@ -98,7 +98,7 @@ if __name__ == '__main__':
     session = boto3.Session(profile_name=aws_profile)
 
     config = configparser.ConfigParser()
-    config.read('config.ini')
+    config.read('/home/ubuntu/config.ini')
     
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
     SLACK_URL = config.get('s3_setting', 'SLACK_URL')
