@@ -46,7 +46,7 @@ def generate_slack_message(result):
                       for service, details in result.items()}
 
     # 결과 출력을 위한 문자열 생성
-    output_str = "Acount: " + account_name + "Daily Total : " + str(total_price) + "$\n"
+    output_str = "Acount: " + account_name + "\nDaily Total : " + str(total_price) + "$\n"
 
     for service, price in sorted_services:
         if price == 0:
