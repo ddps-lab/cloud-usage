@@ -46,18 +46,18 @@ def generate_slack_message(result):
                       for service, details in result.items()}
 
     # 결과 출력을 위한 문자열 생성
-    output_str = "Acount: " + account_name + "\nDaily Total : " + str(total_price) + "$\n"
+    output_str = "Acount: " + account_name + "\nDaily Total : $" + str(total_price) + "\n"
 
     for service, price in sorted_services:
         if price == 0:
             continue
-        output_str += f"{service}: {price}$\n"
+        output_str += f"{service}: ${price}\n"
         for detail in sorted_details[service]:
             detail_name = list(detail.keys())[0]
             detail_price = float(list(detail.values())[0])
             if detail_price == 0:
                 continue
-            output_str += f"        {detail_name}: {detail_price}$\n"
+            output_str += f"        {detail_name}: ${detail_price}\n"
         output_str += "\n\n"
 
     return output_str
