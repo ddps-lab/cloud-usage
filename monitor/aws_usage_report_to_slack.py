@@ -14,26 +14,53 @@ def get_usage():
         "Start" : datetime.strftime(datetime.now() - timedelta(query_start_day), '%Y-%m-%d'),
         "End" : datetime.strftime(datetime.now() - timedelta(query_end_day), '%Y-%m-%d')
     }
-    response=ce_client.get_cost_and_usage(TimePeriod=period, Granularity="DAILY", Metrics=["UnblendedCost"], GroupBy=[{"Type":"DIMENSION", "Key":"USAGE_TYPE"}])
-    valid_r = response["ResultsByTime"][0]["Groups"]
-    result = []
-    for r in valid_r:
-        if r["Metrics"]["UnblendedCost"]["Amount"] != "0":
-            result.append(r)
+    response = ce_client.get_cost_and_usage(TimePeriod=period, Granularity="DAILY",
+                                            Metrics=["UnblendedCost"], GroupBy=[
+                                                    {
+                                                        'Type': 'DIMENSION',
+                                                        'Key': 'SERVICE'
+                                                    },
+                                                    {
+                                                        'Type': 'DIMENSION',
+                                                        'Key': 'USAGE_TYPE'
+                                                    }
+                                                ])
+
+    result = {}
+    for r in response['ResultsByTime'][0]['Groups']:
+        result.setdefault(r['Keys'][0], [])
+        result[r['Keys'][0]].append({r['Keys'][1]: r['Metrics']['UnblendedCost']['Amount']})
     return result
 
 def generate_slack_message(result):
-    daily_total = 0.0
-    temp_result = {}
-    for r in result:
-        temp_result[r["Keys"][0]] = float(r["Metrics"]["UnblendedCost"]["Amount"])
-        daily_total += temp_result[r["Keys"][0]]
-    sorted_result = dict(sorted(temp_result.items(), key=operator.itemgetter(1),reverse=True))
+    # 총 가격 계산
+    total_price = sum(float(detail[list(detail.keys())[0]]) for service in result.values() for detail in service)
 
-    message = "Acount: " + account_name + "\nDaily Total = " + str(daily_total) + "\n"
-    for k in sorted_result.keys():
-        message += (k + " = " + str(sorted_result[k]) + "\n")
-    return message
+    # 서비스별 가격 계산 및 정렬
+    service_prices = {service: sum(float(detail[list(detail.keys())[0]]) for detail in details)
+                      for service, details in result.items()}
+    sorted_services = sorted(service_prices.items(), key=lambda x: x[1], reverse=True)
+
+    # 서비스별 세부 사항 정렬
+    sorted_details = {service: sorted(details, key=lambda x: float(list(x.values())[0]), reverse=True)
+                      for service, details in result.items()}
+
+    # 결과 출력을 위한 문자열 생성
+    output_str = "Acount: " + account_name + "Daily Total : " + str(total_price) + "$\n"
+
+    for service, price in sorted_services:
+        if price == 0:
+            continue
+        output_str += f"{service}: {price}$\n"
+        for detail in sorted_details[service]:
+            detail_name = list(detail.keys())[0]
+            detail_price = float(list(detail.values())[0])
+            if detail_price == 0:
+                continue
+            output_str += f"        {detail_name}: {detail_price}$\n"
+        output_str += "\n\n"
+
+    return output_str
 
 def generate_curl_message(message):
     payload = {"text": message}
