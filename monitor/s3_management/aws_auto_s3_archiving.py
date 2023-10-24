@@ -1,8 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-from datetime import datetime, timezone, timedelta
-import configparser
+import datetime, configparser, pytz
 
 
 # auto_archiving - 아카이브할 버킷 탐색 및 아카이브 진행
@@ -56,9 +55,8 @@ def auto_archiving(session, DEADLINE_MONTHS):
                         
 
 # created message - 아카이브 결과를 메세지로 생성
-def created_message(archiving_list, error_list):
-    crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
-    message = f'*s3 archiving management* ({crrent_time})'
+def created_message(now_time, archiving_list, error_list):
+    message = f'*s3 archiving management* ({now_time})'
     if len(archiving_list) > 0:
         count = 1
         message += f"\n{len(archiving_list)}개의 버킷을 Glacier로 옮겼습니다.\n"
@@ -103,6 +101,10 @@ if __name__ == '__main__':
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
     SLACK_URL = config.get('s3_setting', 'SLACK_URL')
 
+    utc_time = datetime.datetime.utcnow()
+    korea_timezone = pytz.timezone('Asia/Seoul')
+    korea_time = (utc_time.replace(tzinfo=pytz.utc).astimezone(korea_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+
     archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS)
-    message = created_message(archiving_list, error_list)
+    message = created_message(korea_time, archiving_list, error_list)
     response = slack_message(message, SLACK_URL)

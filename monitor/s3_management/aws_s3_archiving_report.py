@@ -1,8 +1,7 @@
-import boto3
+import boto3, os
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-from datetime import datetime, timezone, timedelta
-import os
+import datetime, pytz
 
 SLACK_URL = os.environ['SLACK_URL']
 
@@ -56,12 +55,10 @@ def get_archiving_bucket():
                 
 
 # created message : 탐색된 아카이브행 버킷을 메세지로 생성
-def created_message(archiving_list, bucket_name_max):
+def created_message(now_time, archiving_list, bucket_name_max):
     messages = []
-    header = ""
     header = "*S3 Bucket List to be Archived* - [" + str(len(archiving_list)) + " buckets]\n"
-    crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
-    header += (crrent_time+"\n")
+    header += (now_time+"\n")
 
     if len(archiving_list) > 0:
         header += "* 금월 6일에 Glacier로 이동할 버킷 리스트입니다.\n* 해당 버킷이 Glacier로 이동하길 원하지 않으시면, 백업 혹은 새로 액세스해주시길 바랍니다.\n"
@@ -102,8 +99,12 @@ def slack_message(message, meg_type, url):
 def lambda_handler(event, context):
     url = SLACK_URL
 
+    utc_time = datetime.datetime.utcnow()
+    korea_timezone = pytz.timezone('Asia/Seoul')
+    korea_time = (utc_time.replace(tzinfo=pytz.utc).astimezone(korea_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+
     bucket_result_list, bucket_name_max = get_archiving_bucket()
-    header, messages = created_message(bucket_result_list, bucket_name_max)
+    header, messages = created_message(korea_time, bucket_result_list, bucket_name_max)
     
     response = slack_message(header, True, url)
     
