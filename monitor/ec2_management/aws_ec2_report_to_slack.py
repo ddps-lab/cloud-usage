@@ -1,6 +1,6 @@
-import boto3, re
-import urllib.request, urllib.parse, json, os
-from datetime import datetime, timezone, timedelta
+import boto3, re, os
+import urllib.request, urllib.parse, json, pytz
+from datetime import datetime, timezone
 from slack_msg_sender import send_slack_message
 
 
@@ -148,13 +148,16 @@ def slack_message(message, url):
 # lambda handler : 람다 실행
 def lambda_handler(event, context):
     url = SLACK_URL
-    current_time = datetime.now(timezone.utc)
-    head_message = "Account: bigdata@kookmin.ac.kr\n"
-    cur_time = (current_time + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M')
-    head_message += (cur_time+"\n")
+    
+    utc_time = datetime.datetime.utcnow()
+    korea_timezone = pytz.timezone('Asia/Seoul')
+    korea_time = (utc_time.replace(tzinfo=pytz.utc).astimezone(korea_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+
+    head_message = f"Account: {os.environ['EMAIL']}\n"
+    head_message += (korea_time+"\n")
 
     try:
-        running_instances, stopped_instances, orphaned_volumes  = instance_management(current_time)
+        running_instances, stopped_instances, orphaned_volumes  = instance_management(korea_time)
         message = created_message(head_message, running_instances, stopped_instances, orphaned_volumes)
         response = slack_message(message, url)
         return "The Instance List was successfully sent in a Slack. Check the Slack message."
