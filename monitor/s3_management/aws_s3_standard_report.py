@@ -7,11 +7,11 @@ import os
 SLACK_URL = os.environ['SLACK_URL']
 
 
-# s3 버킷을 불러오고 리스트로 목록을 만듭니다.
-def get_all_s3_bucket_list():
+# get s3 bucket : s3 버킷 중 standard class 만 리스트 생성
+def get_s3_bucket():
     s3_client = boto3.client('s3')
     bucket_list = s3_client.list_buckets()
-    bucket_result_list = []
+    standard_list = []
     bucket_name_max = 0
     
     for bucket in bucket_list['Buckets']:
@@ -25,36 +25,38 @@ def get_all_s3_bucket_list():
             continue
         bucket_size = 0
         last_accessed_date = "N/A"
+        bucket_class = "STANDARD"
         
         if 'Contents' in bucket_objects:
-            last_accessed = [objects['LastModified'].strftime("%Y-%m-%d") for objects in bucket_objects['Contents'] if 'LastModified' in objects]
-            if last_accessed:
-                last_accessed_date = max(last_accessed)
+            last_accessed = []
+            for content in bucket_objects['Contents']:
+                last_accessed.append(content['LastModified'].strftime("%Y-%m-%d"))
+            last_accessed_date = max(last_accessed)
 
-                
-            objects_sizes = [objects['Size'] for objects in bucket_objects['Contents'] if objects.get("Size") is not None]
-            if objects_sizes:
-                for obj in objects_sizes:
-                    bucket_size += obj
-            bucket_size = round(bucket_size/(1000*1000), 2) # MB 단위
+            for content in bucket_objects['Contents']:
+                if content['StorageClass'] == "STANDARD":
+                    bucket_size += content['Size']
+            bucket_size = round(bucket_size/(1000000), 2) # MB 단위
 
-
-        result = [bucket_name, bucket_size, last_accessed_date]
-        bucket_result_list.append(result)
-    orderer_bucket_result_list = sorted(bucket_result_list, key=lambda x: x[1], reverse=True)
-    return orderer_bucket_result_list, bucket_name_max
+        if bucket_size == 0:
+            bucket_class = "GLACIER"
+        
+        if bucket_class == "STANDARD":
+            standard_list.append([bucket_name, bucket_size, last_accessed_date])
+    ordered_standard_list = sorted(standard_list, key=lambda x: x[1], reverse=True)
+    return ordered_standard_list, bucket_name_max
                
 
-# 콘솔 또는 슬랙으로 보낼 메세지를 생성합니다.
-def generate_message(bucket_result_list, bucket_name_max):
+# created message : standard bucket을 메세지로 생성
+def created_message(standard_list, bucket_name_max):
     messages = []
-    header = "S3 Bucket List - [" + str(len(bucket_result_list)) + " buckets]\n"
+    header = "S3 Bucket List - [" + str(len(standard_list)) + " buckets]\n"
     crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
     header += (crrent_time+"\n")
    
     message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12} {"Last Modified"}'
     count = 1
-    for item in bucket_result_list:
+    for item in standard_list:
         if item[1] >= 1000:
             item[1] = str(round(item[1]/1000, 2)) + " GB"
         else:
@@ -68,33 +70,29 @@ def generate_message(bucket_result_list, bucket_name_max):
     return header, messages
     
 
-# 슬랙으로 보낼 메세지 payload 형식을 결정합니다.
-def generate_curl_message(message, meg_type):
+# slack message : 생성한 메세지를 슬랙으로 전달
+def slack_message(message, meg_type, url):
     if meg_type == True:
         payload = {"text": message}
     else:
         payload = {"text": f'```{message}```'}
-    return json.dumps(payload).encode("utf-8")
+    data = json.dumps(payload).encode("utf-8")
 
-# 주어진 URL에 JSON 형식의 데이터를 전송합니다.
-def post_message(url, data):
     req = urllib.request.Request(url)
     req.add_header("Content-Type", "application/json")
     return urllib.request.urlopen(req, data)
 
 
-# lambda_handler : lambda를 실행하고 슬랙으로 목록을 보냅니다.
+# lambda_handler : 람다 실행
 def lambda_handler(event, context):
     url = SLACK_URL
 		
-    bucket_result_list, bucket_name_max = get_all_s3_bucket_list()
-    header, messages = generate_message(bucket_result_list, bucket_name_max)
+    bucket_standard_list, bucket_name_max = get_s3_bucket()
+    header, messages = created_message(bucket_standard_list, bucket_name_max)
     
-    data = generate_curl_message(header, True)
-    response = post_message(url, data)
+    response = slack_message(header, True, url)
     
     for meg in messages:
-        data = generate_curl_message(meg, False)
-        response = post_message(url, data)
+        response = slack_message(meg,False, url)
         
     return "All bucket list of s3 was sent in a slack. Check the Slack message."
