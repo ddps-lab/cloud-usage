@@ -1,7 +1,7 @@
 import boto3, os
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-import datetime, pytz
+from datetime import datetime, timedelta
 
 SLACK_URL = os.environ['SLACK_URL']
 
@@ -72,32 +72,30 @@ def created_message(now_time, standard_list, bucket_name_max):
     
 
 # slack message : 생성한 메세지를 슬랙으로 전달
-def slack_message(message, meg_type, url):
+def slack_message(message, meg_type):
     if meg_type == True:
         payload = {"text": message}
     else:
         payload = {"text": f'```{message}```'}
     data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(SLACK_URL)
     req.add_header("Content-Type", "application/json")
     return urllib.request.urlopen(req, data)
 
 
 # lambda_handler : 람다 실행
 def lambda_handler(event, context):
-    url = SLACK_URL
 
-    utc_time = datetime.datetime.utcnow()
-    korea_timezone = pytz.timezone('Asia/Seoul')
-    korea_time = (utc_time.replace(tzinfo=pytz.utc).astimezone(korea_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+    utc_time = datetime.utcnow()
+    korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
     bucket_standard_list, bucket_name_max = get_s3_bucket()
     header, messages = created_message(korea_time, bucket_standard_list, bucket_name_max)
     
-    response = slack_message(header, True, url)
+    response = slack_message(header, True)
     
     for meg in messages:
-        response = slack_message(meg, False, url)
+        response = slack_message(meg, False)
         
     return "All bucket list of s3 was sent in a slack. Check the Slack message."

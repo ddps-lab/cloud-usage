@@ -1,7 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
-import urllib.request, urllib.parse, json
-import datetime, configparser, pytz
+import urllib.request, urllib.parse, json, configparser
+from datetime import datetime,  timedelta
 
 
 # auto_archiving - 아카이브할 버킷 탐색 및 아카이브 진행
@@ -101,9 +101,8 @@ if __name__ == '__main__':
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
     SLACK_URL = config.get('s3_setting', 'SLACK_URL')
 
-    utc_time = datetime.datetime.utcnow()
-    korea_timezone = pytz.timezone('Asia/Seoul')
-    korea_time = (utc_time.replace(tzinfo=pytz.utc).astimezone(korea_timezone)).strftime("%Y-%m-%d %H:%M:%S")
+    utc_time = datetime.utcnow()
+    korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
     archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS)
     message = created_message(korea_time, archiving_list, error_list)
