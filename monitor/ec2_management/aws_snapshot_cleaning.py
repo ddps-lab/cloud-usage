@@ -1,6 +1,7 @@
 import boto3
 import urllib.request, json, os
 from datetime import datetime, timedelta
+from slack_msg_sender import send_slack_message
 
 
 SLACK_URL = os.environ['SLACK_URL']
@@ -45,20 +46,23 @@ def snapshot_management():
             ami_list[ami['ImageId']] = snapshot_id
 
         # snapshot checking in the volume
-        for volume_id, snapsgit_id in volume_list.items():
-            if snapsgit_id in snapshot_list:
+        for volume_id, snapshot_id in volume_list.items():
+            if snapshot_id in snapshot_list:
                 del snapshot_list[snapshot_id]
         
         # snapshot checking in the ami
         for ami_id, snapshot_id in ami_list.items():
             if snapshot_id in snapshot_list:
                 del snapshot_list[snapshot_id]
-        result_snapshot[region] = 0
         
         # delete snapshot
+        result_snapshot[region] = 0
         for snapshot_id in snapshot_list:
-            ebs.delete_snapshot(SnapshotId=snapshot_id)
-            result_snapshot[region] += 1
+            try:
+                ebs.delete_snapshot(SnapshotId=snapshot_id)
+                result_snapshot[region] += 1
+            except Exception as e:
+                send_slack_message(f"스냅샷 삭제 실패\n{e}")
     return result_snapshot
     
 
