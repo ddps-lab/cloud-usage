@@ -1,8 +1,7 @@
-import boto3
+import boto3, os
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-from datetime import datetime, timezone, timedelta
-import os
+from datetime import datetime, timedelta
 
 SLACK_URL = os.environ['SLACK_URL']
 
@@ -43,16 +42,18 @@ def get_s3_bucket():
         
         if bucket_class == "STANDARD":
             standard_list.append([bucket_name, bucket_size, last_accessed_date])
+        elif bucket_class == "GLACIER" and last_accessed_date == "N/A":
+            standard_list.append([bucket_name, bucket_size, last_accessed_date])
+            
     ordered_standard_list = sorted(standard_list, key=lambda x: x[1], reverse=True)
     return ordered_standard_list, bucket_name_max
                
 
 # created message : standard bucket을 메세지로 생성
-def created_message(standard_list, bucket_name_max):
+def created_message(now_time, standard_list, bucket_name_max):
     messages = []
-    header = "S3 Bucket List - [" + str(len(standard_list)) + " buckets]\n"
-    crrent_time = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
-    header += (crrent_time+"\n")
+    header = "*S3 Bucket List* - [" + str(len(standard_list)) + " buckets]\n"
+    header += (now_time+"\n")
    
     message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12} {"Last Modified"}'
     count = 1
@@ -71,28 +72,30 @@ def created_message(standard_list, bucket_name_max):
     
 
 # slack message : 생성한 메세지를 슬랙으로 전달
-def slack_message(message, meg_type, url):
+def slack_message(message, meg_type):
     if meg_type == True:
         payload = {"text": message}
     else:
         payload = {"text": f'```{message}```'}
     data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(SLACK_URL)
     req.add_header("Content-Type", "application/json")
     return urllib.request.urlopen(req, data)
 
 
 # lambda_handler : 람다 실행
 def lambda_handler(event, context):
-    url = SLACK_URL
-		
+
+    utc_time = datetime.utcnow()
+    korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
+
     bucket_standard_list, bucket_name_max = get_s3_bucket()
-    header, messages = created_message(bucket_standard_list, bucket_name_max)
+    header, messages = created_message(korea_time, bucket_standard_list, bucket_name_max)
     
-    response = slack_message(header, True, url)
+    response = slack_message(header, True)
     
     for meg in messages:
-        response = slack_message(meg,False, url)
+        response = slack_message(meg, False)
         
     return "All bucket list of s3 was sent in a slack. Check the Slack message."

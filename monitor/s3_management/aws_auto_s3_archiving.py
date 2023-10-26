@@ -1,12 +1,12 @@
 import boto3
 from botocore.exceptions import ClientError
-import urllib.request, urllib.parse, json
-from datetime import datetime, timezone, timedelta
+import urllib.request, urllib.parse, json, configparser
+from datetime import datetime,  timedelta
 
 
 # auto_archiving - 아카이브할 버킷 탐색 및 아카이브 진행
-def auto_archiving(aws_access_key_id, aws_secret_access_key, DEADLINE_MONTHS):
-    s3_client = boto3.client('s3', aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
+def auto_archiving(session, DEADLINE_MONTHS):
+    s3_client = session.client('s3')
     bucket_list = s3_client.list_buckets()
     buckets = bucket_list['Buckets']
 
@@ -43,24 +43,32 @@ def auto_archiving(aws_access_key_id, aws_secret_access_key, DEADLINE_MONTHS):
                             s3_client.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': content['Key']}, Key=content['Key'], StorageClass='GLACIER')
                         except ClientError as e:
                             error_bucket.append([content['Key']])
-                error_list.append([bucket_name, error_bucket])
+                if len(error_bucket) > 0:
+                    error_list.append([bucket_name, error_bucket])
                 archiving_list.append([bucket_name, standard_size])
-    ordered_archiving_list = sorted(archiving_list, key=lambda x: x[2], reverse=True)
+                
+    if len(archiving_list) > 0:
+        ordered_archiving_list = sorted(archiving_list, key=lambda x: x[1], reverse=True)
+    else:
+        ordered_archiving_list = []
     return ordered_archiving_list, error_list
                         
 
 # created message - 아카이브 결과를 메세지로 생성
-def created_message(archiving_list, error_list):
-    message = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+def created_message(now_time, archiving_list, error_list):
+    message = f'*s3 archiving management* ({now_time})'
     if len(archiving_list) > 0:
         count = 1
         message += f"\n{len(archiving_list)}개의 버킷을 Glacier로 옮겼습니다.\n"
         for bucket in archiving_list:
-            if bucket[1] >= 1000:
-                size = round(bucket[1]/1000, 2)
+            if bucket[1] >= 1000000000:
+                size = round(bucket[1]/1000000000, 2)
                 message += f"\n{count}.  {bucket[0]}    {size}GB"
+            elif bucket[1] >= 1000000:
+                size = round(bucket[1]/1000000, 2)
+                message += f"\n{count}.  {bucket[0]}    {size}MB"
             else:
-                message += f"\n{count}.  {bucket[0]}    {bucket[1]}MB"
+                message += f"\n{count}.  {bucket[0]}    {size}"
             count += 1
     else:
         message += "\nGlacier로 옮길 항목이 없습니다.\n"
@@ -84,19 +92,18 @@ def slack_message(message, url):
 
 
 if __name__ == '__main__':
-    # AWS 인증 정보 - 이곳에 사용자 정보를 반드시 입력하세요.
-    aws_access_key_id = ''
-    aws_secret_access_key = ''
+    aws_profile = 'ddps-usage'
+    session = boto3.Session(profile_name=aws_profile)
 
-    # 기간 설정 (ex : 6 개월) - 기간을 설정해주세요. (기본값 : 6)
-    DEADLINE_MONTHS = 6
+    config = configparser.ConfigParser()
+    config.read('/home/ubuntu/config.ini')
+    
+    DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
+    SLACK_URL = config.get('s3_setting', 'SLACK_URL')
 
-    # slack url - slack url을 입력해주세요. (기본값 : ddps labs)
-    url = ''
+    utc_time = datetime.utcnow()
+    korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
-    # 아래 코드는 절대 건들지 마세요.
-    print("S3 버킷을 관리 중입니다. 완료될 때까지 실행을 중지하지 마십시오.")
-    archiving_list, error_list = auto_archiving(aws_access_key_id, aws_secret_access_key, DEADLINE_MONTHS)
-    message = created_message(archiving_list, error_list)
-    response = slack_message(message, url)
-    print("작업이 종료되었습니다. 사용한 EC2 및 AMI는 반드시 삭제해주십시오.")
+    archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS)
+    message = created_message(korea_time, archiving_list, error_list)
+    response = slack_message(message, SLACK_URL)
