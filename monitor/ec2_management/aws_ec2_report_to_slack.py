@@ -1,5 +1,5 @@
-import boto3, re
-import urllib.request, urllib.parse, json, os
+import boto3, re, os
+import urllib.request, urllib.parse, json
 from datetime import datetime, timezone, timedelta
 from slack_msg_sender import send_slack_message
 
@@ -37,10 +37,13 @@ def get_instance_items(current_time, regions):
                 for instance in reservation['Instances']:
                     
                     # 인스턴스 탐색
-                    for tag in instance['Tags']:
-                        if tag['Key'] == 'Name':
-                            instance_name = tag['Value']
-                            break
+                    try:
+                        for tag in instance['Tags']:
+                            if tag['Key'] == 'Name':
+                                instance_info = tag['Value']
+                                break
+                    except Exception as e:
+                        instance_info = instance['InstanceId']
                     instance_type = instance['InstanceType']
                     instance_state = instance['State']['Name']
                     if instance_state == 'running':
@@ -48,7 +51,7 @@ def get_instance_items(current_time, regions):
                         instance_time = current_time - launch_time
                     else:
                         stopped_time = re.findall('.*\((.*)\)', instance['StateTransitionReason'])[0][:-4]
-                        instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                        instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
                     days = instance_time.days
                     hours = instance_time.seconds // 3600
                     minutes = (instance_time.seconds % 3600) // 60
@@ -56,10 +59,10 @@ def get_instance_items(current_time, regions):
                     # 인스턴스의 볼륨ID 확인
                     for mapping in instance['BlockDeviceMappings']:
                         if mapping['DeviceName'] == '/dev/sda1':
-                            volume_Id = mapping['Ebs']['VolumeId']
+                            volume_id = mapping['Ebs']['VolumeId']
 
                     # 인스턴스 저장
-                    instance_dsc = {'region':ec2_region, 'name':instance_name, 'type':instance_type, 'volume':volume_Id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
+                    instance_dsc = {'region':ec2_region, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
                     if instance_state == 'running':
                         running_instances.append(instance_dsc)
                     else:
@@ -108,7 +111,7 @@ def created_message(head_message, running_list, stopped_list, volume_list):
         if len(running_list) > 0:
             message += (f"\n[Running EC2 Instances] ({len(running_list)})\n")
             for running_instance in running_list:
-                meg = (f"{running_instance['region']} / {running_instance['name']} / {running_instance['type']} / {running_instance['volume']} ~ {running_instance['time_days']}일 {running_instance['time_hours']}시간 {running_instance['time_minutes']}분간")
+                meg = (f"{running_instance['region']} / {running_instance['info']} / {running_instance['type']} / {running_instance['volume']} ~ {running_instance['time_days']}일 {running_instance['time_hours']}시간 {running_instance['time_minutes']}분간")
                 if running_instance['time_days'] == 0 or running_instance['time_days'] > 3:
                     message += (meg+" 실행 중 :large_green_circle:\n")
                 else:
@@ -117,7 +120,7 @@ def created_message(head_message, running_list, stopped_list, volume_list):
         if len(stopped_list) > 0:
             message += (f"\n[Stopped EC2 Instances] ({len(stopped_list)})\n")
             for stopped_instance in stopped_list:
-                meg = (f"{stopped_instance['region']} / {stopped_instance['name']} / {stopped_instance['type']} / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
+                meg = (f"{stopped_instance['region']} / {stopped_instance['info']} / {stopped_instance['type']} / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
                 if stopped_instance['time_days'] < 7:
                     message += (meg+" 정지 중 :white_circle:\n")
                 elif stopped_instance['time_days'] < 13:
@@ -136,27 +139,27 @@ def created_message(head_message, running_list, stopped_list, volume_list):
 
 
 # slack message : 생성한 메세지를 슬랙으로 전달
-def slack_message(message, url):
+def slack_message(message):
     payload = {"text": message}
     data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(SLACK_URL)
     req.add_header("Content-Type", "application/json")
     return urllib.request.urlopen(req, data)
 
 
 # lambda handler : 람다 실행
 def lambda_handler(event, context):
-    url = SLACK_URL
-    current_time = datetime.now(timezone.utc)
-    head_message = "Account: bigdata@kookmin.ac.kr\n"
-    cur_time = (current_time + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M')
-    head_message += (cur_time+"\n")
+    utc_time = datetime.utcnow()
+    korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
+
+    head_message = f"Account: {os.environ['EMAIL']}\n"
+    head_message += (korea_time+"\n")
 
     try:
-        running_instances, stopped_instances, orphaned_volumes  = instance_management(current_time)
+        running_instances, stopped_instances, orphaned_volumes  = instance_management(korea_time)
         message = created_message(head_message, running_instances, stopped_instances, orphaned_volumes)
-        response = slack_message(message, url)
+        response = slack_message(message)
         return "The Instance List was successfully sent in a Slack. Check the Slack message."
     except Exception as e:
         send_slack_message(f"인스턴스 관리가 정상적으로 이루어지지 않았습니다.\n{e}")
