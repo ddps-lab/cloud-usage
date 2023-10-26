@@ -51,7 +51,7 @@ def get_instance_items(current_time, regions):
                         instance_time = current_time - launch_time
                     else:
                         stopped_time = re.findall('.*\((.*)\)', instance['StateTransitionReason'])[0][:-4]
-                        instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc)
+                        instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
                     days = instance_time.days
                     hours = instance_time.seconds // 3600
                     minutes = (instance_time.seconds % 3600) // 60
@@ -150,14 +150,14 @@ def slack_message(message):
 
 # lambda handler : 람다 실행
 def lambda_handler(event, context):
-    utc_time = datetime.utcnow()
+    utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
     head_message = f"Account: {os.environ['EMAIL']}\n"
     head_message += (korea_time+"\n")
 
     try:
-        running_instances, stopped_instances, orphaned_volumes  = instance_management(korea_time)
+        running_instances, stopped_instances, orphaned_volumes  = instance_management(utc_time)
         message = created_message(head_message, running_instances, stopped_instances, orphaned_volumes)
         response = slack_message(message)
         return "The Instance List was successfully sent in a Slack. Check the Slack message."
