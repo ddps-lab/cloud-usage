@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from slack_msg_sender import send_slack_message
 
 
-SLACK_URL = os.environ['SLACK_URL']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 # instance management : 모든 리전의 인스턴스와 볼륨 탐색 및 리스트 반환
 def instance_management(current_time):
@@ -58,8 +58,7 @@ def get_instance_items(current_time, regions):
 
                     # 인스턴스의 볼륨ID 확인
                     for mapping in instance['BlockDeviceMappings']:
-                        if mapping['DeviceName'] == '/dev/sda1':
-                            volume_id = mapping['Ebs']['VolumeId']
+                        volume_id = mapping['Ebs']['VolumeId']
 
                     # 인스턴스 저장
                     instance_dsc = {'region':ec2_region, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
