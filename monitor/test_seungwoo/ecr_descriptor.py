@@ -6,7 +6,7 @@ region_dict_objects = {}
 repository_errors = []
 image_errors = []
 
-# region object
+# #region object
 #   'repositories' : list
 #   'totalSizeGB' : int
 
@@ -22,12 +22,15 @@ image_errors = []
 #   'imagePushedAt' : datetime
 
 def get_repository_object(client, repositoryName):
-    ret = { 'repositoryName': repositoryName, 'images': [], 'totalSizeGB': 0, 'lastPushedDate': datetime(1999, 11, 24, 0, 0, 0) }
+    korea_timezone = timezone(timedelta(hours=9))
+    ret = { 'repositoryName': repositoryName, 'images': [], 'totalSizeGB': 0 }
     try:
         imageDetails = client.describe_images(repositoryName=repositoryName)['imageDetails']
     except Exception as e:
         image_errors.append((repositoryName, str(e)))
         return ret
+    
+    ret['lastPushedDate'] = datetime(1111, 1, 1, 1, 1, 1, tzinfo=timezone(timedelta(hours=9)))
     
     for image in imageDetails:
         imageTags = image['imageTags'] if 'imageTags' in image.keys() else ['-']
@@ -65,6 +68,8 @@ def set_region_dict(session):
         region_object = get_region_object(client, region)
         if len(region_object['repositories']) <= 0:
             continue
+        region_object['repositories'] = \
+            sorted(region_object['repositories'], key=lambda x: (x['lastPushedDate'], x['totalSizeGB']), reverse=True)
         region_dict_objects[region] = region_object
 
 def get_region_string(name, region_object):
@@ -76,8 +81,8 @@ def get_repository_string(repository_object):
     korea_date = repository_object['lastPushedDate'].astimezone(korea_timezone)
     formatted_date = korea_date.strftime("%Y-%m-%d %H:%M:%S")
 
-    ret = f"repository name : {repository_object['repositoryName']} "
-    ret += f"repository size : {repository_object['totalSizeGB']:.3f} GB "
+    ret = f"repository name : {repository_object['repositoryName']} / "
+    ret += f"repository size : {repository_object['totalSizeGB']:.3f} GB / "
     ret += f"last pushed date : {formatted_date}\n"
     
     return ret
@@ -90,7 +95,7 @@ def get_image_string(image_object):
     ret += f"imagePushedAt : {formatted_date}\n"
     return ret
 
-def get_total_string():
+def get_total_image_string():
     ret = ""
     for region in region_dict_objects.keys():
         region_object = region_dict_objects[region]
@@ -101,15 +106,29 @@ def get_total_string():
 
             for image_object in repository_object['images']:
                 ret += get_image_string(image_object)
-
     return ret
 
+def get_total_repository_string():
+    ret = ""
+    for region in region_dict_objects.keys():
+        region_object = region_dict_objects[region]
+        ret += get_region_string(region, region_object)
+        
+        for repository_object in region_object['repositories']:
+            ret += get_repository_string(repository_object)
+    return ret
 
 
 if __name__ == "__main__":
     session = boto3.Session(profile_name='ddps-usage')
     set_region_dict(session)
-    total_string = get_total_string()
+    total_image_string = get_total_image_string()
+    print('end total string')
+    with open('ecr_images.txt', 'w') as f:
+        f.write(total_image_string)
+        
+    total_repository_string = get_total_repository_string()
     with open('ecr_repositories.txt', 'w') as f:
-        f.write(total_string)
-    print(total_string)
+        f.write(total_repository_string)
+        
+    print('end total repositories')
