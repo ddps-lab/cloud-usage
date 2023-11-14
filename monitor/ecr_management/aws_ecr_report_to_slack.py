@@ -117,7 +117,9 @@ def get_image_string(image_object):
 
 def get_total_image_string():
     ret = ""
-    for region in region_dict_objects.keys():
+    repositoryNames_sorted_less = [(region_dict_objects[region]['totalSizeGB'], region) for region in region_dict_objects.keys()]
+    repositoryNames_sorted_less.sort(reverse=True)
+    for size, region in repositoryNames_sorted_less:
         region_object = region_dict_objects[region]
         ret += get_region_string(region, region_object)
 
@@ -130,7 +132,9 @@ def get_total_image_string():
 
 def get_total_repository_string():
     ret = ""
-    for region in region_dict_objects.keys():
+    repositoryNames_sorted_less = [(region_dict_objects[region]['totalSizeGB'], region) for region in region_dict_objects.keys()]
+    repositoryNames_sorted_less.sort(reverse=True)
+    for size, region in repositoryNames_sorted_less:
         region_object = region_dict_objects[region]
         ret += get_region_string(region, region_object)
         
