@@ -28,12 +28,11 @@ image_errors = []
 time_string_format = "%Y-%m-%d %H:%M"
 six_month = timedelta(days=365/2)
 one_year = timedelta(days=365)
-korea_timezone = timezone(timedelta(hours=9))
+korea_utc_timezone_info = timezone(timedelta(hours=9))
 SLACK_URL = os.environ['SLACK_DDPS']
 EMAIL = os.environ['EMAIL']
 
 def get_repository_object(client, repositoryName):
-    korea_timezone = timezone(timedelta(hours=9))
     ret = { 'repositoryName': repositoryName, 'images': [], 'totalSizeGB': 0 }
     try:
         imageDetails = client.describe_images(repositoryName=repositoryName)['imageDetails']
@@ -41,7 +40,7 @@ def get_repository_object(client, repositoryName):
         image_errors.append((repositoryName, str(e)))
         return ret
     
-    ret['lastPushedDate'] = datetime(1111, 1, 1, 1, 1, 1, tzinfo=korea_timezone)
+    ret['lastPushedDate'] = datetime(1111, 1, 1, 1, 1, 1, tzinfo=korea_utc_timezone_info)
     
     for image in imageDetails:
         imageTags = image['imageTags'] if 'imageTags' in image.keys() else ['-']
@@ -88,10 +87,10 @@ def get_region_string(name, region_object):
     return ret
 
 def get_repository_string(repository_object):
-    korea_date = repository_object['lastPushedDate'].astimezone(korea_timezone)
+    korea_date = repository_object['lastPushedDate'].astimezone(korea_utc_timezone_info)
     formatted_date = korea_date.strftime(time_string_format)
 
-    cur_korea_datetime = datetime.now(korea_timezone)
+    cur_korea_datetime = datetime.now(korea_utc_timezone_info)
     deltatime = cur_korea_datetime - korea_date
 
     ret = f"repository name : {repository_object['repositoryName']} / "
@@ -110,7 +109,7 @@ def get_repository_string(repository_object):
 
 def get_image_string(image_object):
     ret = f"\timage tags : {'/'.join(image_object['imageTags'])}, image size : {image_object['imageSizeGB']:.3f} GB, "
-    korea_date = image_object['imagePushedAt'].astimezone(korea_timezone)
+    korea_date = image_object['imagePushedAt'].astimezone(korea_utc_timezone_info)
     formatted_date = korea_date.strftime(time_string_format)
     ret += f"imagePushedAt : {formatted_date}\n"
     return ret
@@ -164,7 +163,7 @@ def send_error_message_to_slack(message):
 def lambda_handler(event, context):
     session = boto3.Session()
 
-    cur_korea_datetime = datetime.now(korea_timezone)
+    cur_korea_datetime = datetime.now(korea_utc_timezone_info)
 
     total_repository_string = "[ECR repository 사용 현황]\n"
     total_repository_string += f"Account: {EMAIL}\n"
