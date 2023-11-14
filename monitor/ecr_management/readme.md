@@ -64,9 +64,11 @@
 			- export AWS_DEFAULT_REGION=AWS_REGION_INFO
 		2. credential file 설정
 			- ~/.aws/credentials 파일에 다음 내용 넣기
-			- ```[ddps-usage]
+			```
+			[ddps-usage]
 			aws_access_key_id = YOUR_ACCESS_KEY
-			aws_secret_access_key = YOUR_SECRETE_ACCESS_KEY```
+			aws_secret_access_key = YOUR_SECRETE_ACCESS_KEY
+			```
 
 ## 4. 실행
 ### aws_ecr_report_to_slack.py
