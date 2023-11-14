@@ -1,5 +1,9 @@
 import boto3
 from datetime import datetime, timezone, timedelta
+import json
+import os
+import urllib
+import inspect
 
 region_dict_objects = {}
 
@@ -21,6 +25,13 @@ image_errors = []
 #   'imageSizeGB' : int
 #   'imagePushedAt' : datetime
 
+time_string_format = "%Y-%m-%d %H:%M"
+six_month = timedelta(days=365/2)
+one_year = timedelta(days=365)
+korea_timezone = timezone(timedelta(hours=9))
+SLACK_URL = os.environ['SLACK_DDPS']
+EMAIL = os.environ['EMAIL']
+
 def get_repository_object(client, repositoryName):
     korea_timezone = timezone(timedelta(hours=9))
     ret = { 'repositoryName': repositoryName, 'images': [], 'totalSizeGB': 0 }
@@ -30,7 +41,7 @@ def get_repository_object(client, repositoryName):
         image_errors.append((repositoryName, str(e)))
         return ret
     
-    ret['lastPushedDate'] = datetime(1111, 1, 1, 1, 1, 1, tzinfo=timezone(timedelta(hours=9)))
+    ret['lastPushedDate'] = datetime(1111, 1, 1, 1, 1, 1, tzinfo=korea_timezone)
     
     for image in imageDetails:
         imageTags = image['imageTags'] if 'imageTags' in image.keys() else ['-']
@@ -69,7 +80,7 @@ def set_region_dict(session):
         if len(region_object['repositories']) <= 0:
             continue
         region_object['repositories'] = \
-            sorted(region_object['repositories'], key=lambda x: (x['lastPushedDate'], x['totalSizeGB']), reverse=True)
+            sorted(region_object['repositories'], key=lambda x: (x['totalSizeGB'], x['lastPushedDate']), reverse=True)
         region_dict_objects[region] = region_object
 
 def get_region_string(name, region_object):
@@ -77,21 +88,30 @@ def get_region_string(name, region_object):
     return ret
 
 def get_repository_string(repository_object):
-    korea_timezone = timezone(timedelta(hours=9))
     korea_date = repository_object['lastPushedDate'].astimezone(korea_timezone)
-    formatted_date = korea_date.strftime("%Y-%m-%d %H:%M:%S")
+    formatted_date = korea_date.strftime(time_string_format)
+
+    cur_korea_datetime = datetime.now(korea_timezone)
+    deltatime = cur_korea_datetime - korea_date
 
     ret = f"repository name : {repository_object['repositoryName']} / "
     ret += f"repository size : {repository_object['totalSizeGB']:.3f} GB / "
-    ret += f"last pushed date : {formatted_date}\n"
-    
+    ret += f"last pushed date : {formatted_date}"
+
+    if deltatime >= one_year:
+        ret += " :red_circle:"
+    elif deltatime >= six_month:
+        ret += " :large_orange_circle:"
+    else:
+        ret += " :large_green_circle:"
+    ret += "\n"
+
     return ret
 
 def get_image_string(image_object):
     ret = f"\timage tags : {'/'.join(image_object['imageTags'])}, image size : {image_object['imageSizeGB']:.3f} GB, "
-    korea_timezone = timezone(timedelta(hours=9))
     korea_date = image_object['imagePushedAt'].astimezone(korea_timezone)
-    formatted_date = korea_date.strftime("%Y-%m-%d %H:%M:%S")
+    formatted_date = korea_date.strftime(time_string_format)
     ret += f"imagePushedAt : {formatted_date}\n"
     return ret
 
@@ -118,17 +138,60 @@ def get_total_repository_string():
             ret += get_repository_string(repository_object)
     return ret
 
+def send_message_to_slack(message):
+    payload = {
+        "text": message
+    }
+    data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(SLACK_URL)
+    req.add_header("Content-Type", "application/json")
+    return urllib.request.urlopen(req, data)
+
+def send_error_message_to_slack(message):
+    module_name = inspect.stack()[1][1]
+    line_no = inspect.stack()[1][2]
+    function_name = inspect.stack()[1][3]
+
+    msg = f"File \"{module_name}\", line {line_no}, in {function_name} :\n{message}"
+
+    return send_message_to_slack(msg)
+
+def lambda_handler(event, context):
+    session = boto3.Session()
+
+    cur_korea_datetime = datetime.now(korea_timezone)
+
+    total_repository_string = "[ECR repository 사용 현황]\n"
+    total_repository_string += f"Account: {EMAIL}\n"
+    total_repository_string += cur_korea_datetime.strftime(time_string_format) + "\n"
+
+    try:
+        set_region_dict(session)
+    except Exception as e:
+        print("리전 객체를 초기화 하는데 실패했습니다")
+        print(f"Error : {e}")
+        send_error_message_to_slack(f"ECR region 객체 초기화 실패\n{e}")
+        response = json.dumps({'message': e})
+        return response
+    
+    try:
+        total_repository_string += "마지막 이미지 푸시 경과 시간\n"
+        total_repository_string += "6개월 미만 : :large_green_circle:\n"
+        total_repository_string += "6개월 이상 : :large_orange_circle:\n"
+        total_repository_string += "1년 이상 : :red_circle:"
+        total_repository_string += get_total_repository_string()
+        response = send_message_to_slack(total_repository_string)
+        return response
+    except Exception as e:
+        print("Error at get_total_repository_string() or send_message_to_slack()")
+        print(f"Error : {e}")
+        send_error_message_to_slack(f"ECR repository 객체 문자열 변환 및 슬랙 전송 실패\n{e}")
+        response = json.dumps({'message': e})
+        return response
+
 
 if __name__ == "__main__":
-    session = boto3.Session(profile_name='ddps-usage')
-    set_region_dict(session)
-    total_image_string = get_total_image_string()
-    print('end total string')
-    with open('ecr_images.txt', 'w') as f:
-        f.write(total_image_string)
-        
-    total_repository_string = get_total_repository_string()
-    with open('ecr_repositories.txt', 'w') as f:
-        f.write(total_repository_string)
-        
-    print('end total repositories')
+    response = lambda_handler(None, None)
+    print(response)
+    
