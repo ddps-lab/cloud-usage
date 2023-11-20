@@ -83,14 +83,14 @@ def lambda_handler(event, context):
     session = boto3.Session()
 
     try:
-        ecr_object = get_ecr_object.get_region_ecr_object(session)
+        ecr_object = get_ecr_object.get_region_ecr_object_dic(session)
     except Exception as e:
         print(e)
         send_error_message_to_slack(f"ECR 객체를 생성하는데 실패했습니다. error : {str(e)}")
         return json.dumps({'message' : str(e)})
     
     try:
-        lambda_object = get_lambda_object.get_region_lambda_object(session)
+        lambda_object = get_lambda_object.get_region_lambda_object_dic(session)
     except Exception as e:
         print(e)
         send_error_message_to_slack(f"람다 객체를 생성하는데 실패했습니다. error : {str(e)}")
