@@ -2,22 +2,48 @@
 이 문서는 aws의 Elastic Container Registry 자원을 관리하기 위한 설명서입니다.
 
 ## 1. 파일 소개
-### aws_ecr_report_to_slack.py
-- 서울 리전의 람다 함수인 `usage_ecr_report`의 파일입니다.
-- (이벤트 브릿지 추가할것)
-- 각 region별 가지고있는 repository들의 목록을 크기 및 마지막으로 이미지가 푸쉬 된 시간을 기준으로 내림차순 정렬하여 슬랙으로 전송합니다.
+### aws_ecr_lambda_report_to_slack.py
+- 실행하게 되는 메인 파일입니다.
+- 사용자 지정 ECR 객체, 람다 객체를 받아와 조인후 슬랙에 전송합니다.
+### get_ecr_object.py
+- 사용자 지정 ECR 객체를 받아오는데 사용하는 파일입니다.
+### get_lambda_object.py
+- 사용자 지정 lambda 객체를 받아오는데 사용하는 파일입니다.
+### slack_utils.py
+- 슬랙으로 메시지를 전송하는 함수들이 있는 파일입니다.
 
 ## 2. 함수 설명
 ### 사용자 지정 객체
-1. region 객체 형식
-	- 'repositories' : list
-	- 'totalSizeGB' : float
-2. repository 객체 형식
+1. ECR 객체 형식
+```
+{
+	REGION_NAME : {
+		'repositories' : [
+			{
+				'repositoryName' : string,
+				'images' : [
+					{
+						'imageTags' : [],
+						'imageSizeGB' : int,
+						'imagePushedAt' : datetime,
+						'imageUris' : string
+					}
+				],
+				'totalSizeGB' : int,
+				'repositoryUri' : string,
+				'lastPushedDate' : datetime
+			}
+		],
+		'totalSizeGB' : int,
+	}
+} 
+```
+3. repository 객체 형식
 	- 'repositoryName' : string
 	- 'images' : list
 	- 'totalSizeGB' : float
 	- 'lastPushedDate' : datetime
-3. image 객체 형식
+4. image 객체 형식
 	- 'imageTags' : list
 	- 'imageSizeGB' : float
 	- 'imagePushedAt' : datetime
