@@ -1,4 +1,0 @@
-741926482963.dkr.ecr.us-west-2.amazonaws.com/convert_torch_onnx@sha256:a279debda71fcd4f0e9207ed2d6db4a40006dc1cea86c641d202a0681b796591
-sha256:a279debda71fcd4f0e9207ed2d6db4a40006dc1cea86c641d202a0681b796591
-741926482963.dkr.ecr.us-west-2.amazonaws.com/convert_torch_onnx:latest
-741926482963.dkr.ecr.us-west-2.amazonaws.com/aws_inferentia
