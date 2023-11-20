@@ -30,7 +30,9 @@ def get_last_execution_time(client, log_group_name):
 def get_repository_string(client, ecr_repository_object, lambda_region_object):
     ret = f"repository name : {ecr_repository_object['repositoryName']} / "
     ret += f"repository size : {ecr_repository_object['totalSizeGB']:.3f} GB / "
-    ret += f"last pushed date : {ecr_repository_object['lastPushedDate']} / "
+    korea_utc_time = ecr_repository_object['lastPushedDate'].astimezone(timezone(timedelta(hours=9)))
+    korea_utc_time = korea_utc_time.strftime(time_string_format)
+    ret += f"last pushed date : {korea_utc_time} / "
     cur_use_lambda = []
     
     if lambda_region_object != None:
