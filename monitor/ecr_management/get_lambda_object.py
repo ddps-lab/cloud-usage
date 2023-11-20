@@ -3,18 +3,6 @@ from datetime import datetime, timezone, timedelta
 
 error_list = []
 
-# region_lambda_object
-#   function_objects : list
-
-# function_object
-#   'FunctionName': string
-#   'MemorySize': int
-#   'LastModified': string
-#   'PackageType': string
-#   'ImageUri': string
-#   'Description': string
-#   'LogGroupName': string
-
 def get_region_lambda_object(client, region):
     ret = []
     functions = []

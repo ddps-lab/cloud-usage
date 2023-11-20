@@ -27,16 +27,16 @@ def get_last_execution_time(client, log_group_name):
     dt_korea = dt_utc + timedelta(hours=9)
     return dt_korea
     
-def get_repository_string(client, ecr_repository_object, lambda_object):
+def get_repository_string(client, ecr_repository_object, lambda_region_object):
     ret = f"repository name : {ecr_repository_object['repositoryName']} / "
     ret += f"repository size : {ecr_repository_object['totalSizeGB']:.3f} GB / "
     ret += f"last pushed date : {ecr_repository_object['lastPushedDate']} / "
     cur_use_lambda = []
     
-    if lambda_object != None:
+    if lambda_region_object != None:
         for image in ecr_repository_object['images']:
             for imageUri in image['imageUris']:
-                for func in lambda_object:
+                for func in lambda_region_object:
                     if func['PackageType'] != 'Image':
                         continue
                     if func['ImageUri'] == imageUri:
@@ -56,7 +56,7 @@ def get_repository_string(client, ecr_repository_object, lambda_object):
             
     return ret
 
-def get_region_string(session, region, ecr_region_object, lambda_object):
+def get_region_string(session, region, ecr_region_object, lambda_region_object):
     try:
         client = session.client('logs', region_name=region)
     except Exception as e:
@@ -65,17 +65,17 @@ def get_region_string(session, region, ecr_region_object, lambda_object):
     
     ret = f"\n====== REGION {region} Total Size : {ecr_region_object['totalSizeGB']:.3f} GB ======\n"
     for repository_object in ecr_region_object['repositories']:
-        repository_string = get_repository_string(client, repository_object, lambda_object)
+        repository_string = get_repository_string(client, repository_object, lambda_region_object)
         ret += repository_string
     
     return ret
 
-def get_total_string(session, ecr_object_dic, lambda_object_dic):
+def get_total_string(session, ecr_object, lambda_object):
     ret = ""
-    repositoryNames_sorted_less = [(ecr_object_dic[region]['totalSizeGB'], region) for region in ecr_object_dic.keys()]
+    repositoryNames_sorted_less = [(ecr_object[region]['totalSizeGB'], region) for region in ecr_object.keys()]
     repositoryNames_sorted_less.sort(reverse=True)
     for size, region in repositoryNames_sorted_less:
-        region_string = get_region_string(session, region, ecr_object_dic[region], lambda_object_dic.get(region))
+        region_string = get_region_string(session, region, ecr_object[region], lambda_object.get(region))
         ret += region_string
     return ret
 
@@ -83,14 +83,14 @@ def lambda_handler(event, context):
     session = boto3.Session()
 
     try:
-        ecr_object_dic = get_ecr_object.get_region_ecr_object_dic(session)
+        ecr_object = get_ecr_object.get_region_ecr_object(session)
     except Exception as e:
         print(e)
         send_error_message_to_slack(f"ECR 객체를 생성하는데 실패했습니다. error : {str(e)}")
         return json.dumps({'message' : str(e)})
     
     try:
-        lambda_object_dic = get_lambda_object.get_region_lambda_object_dic(session)
+        lambda_object = get_lambda_object.get_region_lambda_object(session)
     except Exception as e:
         print(e)
         send_error_message_to_slack(f"람다 객체를 생성하는데 실패했습니다. error : {str(e)}")
@@ -105,7 +105,7 @@ def lambda_handler(event, context):
     total_string += "해당 이미지와 연결된 람다 함수가 없는 경우 : :red_circle:\n"
     
     try:
-        total_string += get_total_string(session, ecr_object_dic, lambda_object_dic)
+        total_string += get_total_string(session, ecr_object, lambda_object)
     except Exception as e:
         print(e)
         send_error_message_to_slack(f"ECR, 람다 객체 문자열화에 실패했습니다. error : {str(e)}")
