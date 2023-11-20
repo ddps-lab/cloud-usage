@@ -30,6 +30,7 @@ def get_last_execution_time(client, log_group_name):
 def get_repository_string(client, ecr_repository_object, lambda_object):
     ret = f"repository name : {ecr_repository_object['repositoryName']} / "
     ret += f"repository size : {ecr_repository_object['totalSizeGB']:.3f} GB / "
+    ret += f"last pushed date : {ecr_repository_object['lastPushedDate']} / "
     cur_use_lambda = []
     
     if lambda_object != None:
