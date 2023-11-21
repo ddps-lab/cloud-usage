@@ -1,0 +1,112 @@
+## 삭제 예정 ECR 리포지토리 및 lambda 함수
+- 삭제 조건 1 : 현재 이미지를 사용중인 람다 함수가 없고 마지막으로 이미지가 푸시 된 지 6개월이상 지난 경우
+- 삭제 조건 2 : 이미지를 사용하는 람다 함수의 마지막 실행 시각이 1년 이상 지난 경우
+### us-west-2
+- ECR 리포지토리 : tvm_lambda_container / 163.220 GB
+	- 람다 함수 : jg-tvm-test, 마지막 실행시간 : 2022-04-14
+- ECR 리포지토리 : mxnet_lambda_container / 53.914 GB
+- ECR 리포지토리 : mxnet_lambda_container_arm / 43.851 GB
+	- 람다 함수 : jg-mxnet-serving, 마지막 실행시간 : 2022-06-15
+- ECR 리포지토리 : tvm_lambda_container_arm / 38.758 GB
+- ECR 리포지토리 : convert_torch_intel_tvm / 35.529 GB
+- ECR 리포지토리 : lambda_archive_module / 30.805 GB
+- ECR 리포지토리 : jg-lambda-image / 29.982 GB
+- ECR 리포지토리 : convert_torch_arm_tvm / 27.831 GB
+- ECR 리포지토리 : onnx_lambda_container / 21.492 GB
+- ECR 리포지토리 : jg-lambda-image-efficientnet / 20.163 GB
+- ECR 리포지토리 : convert_torch_onnx / 19.471 GB
+	- 람다 함수 : convert_torch_intel_onnx, 마지막 실행시간 : 2022-11-06
+- ECR 리포지토리 : torch_lambda_container / 18.752 GB
+- ECR 리포지토리 : serving_intel_onnx / 16.943 GB
+	- 람다 함수 : serving_intel_onnx_2048, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_onnx_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_onnx_1024, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_onnx_4096, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_onnx, 마지막 실행시간 : 2022-08-17
+	- 람다 함수 : serving_intel_onnx_10240, 마지막 실행시간 : 2022-11-06
+	- 람다 함수 : serving_intel_onnx_512, 마지막 실행시간 : 2022-09-08
+- ECR 리포지토리 : jg-seq-ensemble / 16.921 GB
+- ECR 리포지토리 : serving_intel_tvm / 13.887 GB
+	- 람다 함수 : serving_intel_tvm_4096, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_tvm_512, 마지막 실행시간 : 2022-09-08
+	- 람다 함수 : serving_intel_tvm, 마지막 실행시간 : 2022-09-02
+	- 람다 함수 : serving_intel_tvm_2048, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_tvm_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_tvm_10240, 마지막 실행시간 : 2022-11-06
+	- 람다 함수 : serving_intel_tvm_1024, 마지막 실행시간 : 2022-09-06
+- ECR 리포지토리 : jg-graviton-tensorflow / 12.233 GB
+- ECR 리포지토리 : serving_intel_torch / 11.675 GB
+	- 람다 함수 : serving_intel_torch_2048, 마지막 실행시간 : 2023-03-21
+	- 람다 함수 : serving_intel_torch_512, 마지막 실행시간 : 2022-09-08
+	- 람다 함수 : serving_intel_torch_1024, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_torch_4096, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_torch_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_intel_torch, 마지막 실행시간 : 2022-09-02
+	- 람다 함수 : serving_intel_torch_10240, 마지막 실행시간 : 2022-11-06
+- ECR 리포지토리 : jg-lambda-image-nasnetmobile / 11.384 GB
+- ECR 리포지토리 : jg-seq-efficientnet / 10.614 GB
+- ECR 리포지토리 : lambda_optimize_serving / 10.397 GB
+	- 람다 함수 : lambda_optimize_serving, 마지막 실행시간 : No Log Group
+	- 람다 함수 : lambda-optimize-serving, 마지막 실행시간 : 2022-05-25
+- ECR 리포지토리 : serving_arm_tvm / 9.724 GB
+	- 람다 함수 : serving_arm_tvm_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_tvm_10240, 마지막 실행시간 : 2022-11-06
+	- 람다 함수 : serving_arm_tvm_1024, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_tvm_512, 마지막 실행시간 : 2022-09-08
+	- 람다 함수 : serving_arm_tvm_2048, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_tvm_4096, 마지막 실행시간 : 2022-09-06
+- ECR 리포지토리 : lambda_check_module / 9.396 GB
+- ECR 리포지토리 : fetch_and_run / 7.906 GB
+- ECR 리포지토리 : serving_arm_onnx / 7.782 GB
+	- 람다 함수 : serving_arm_onnx_10240, 마지막 실행시간 : 2022-11-06
+	- 람다 함수 : serving_arm_onnx_1024, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_onnx_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_onnx_2048, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_onnx_4096, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_onnx_512, 마지막 실행시간 : 2022-09-08
+	- 람다 함수 : serving_arm_onnx, 마지막 실행시간 : 2022-09-02
+- ECR 리포지토리 : serving_arm_torch / 7.034 GB
+	- 람다 함수 : serving_arm_torch, 마지막 실행시간 : 2022-09-02
+	- 람다 함수 : serving_arm_torch_1024, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_torch_512, 마지막 실행시간 : 2022-09-08
+	- 람다 함수 : serving_arm_torch_8192, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_torch_4096, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_torch_2048, 마지막 실행시간 : 2022-09-06
+	- 람다 함수 : serving_arm_torch_10240, 마지막 실행시간 : 2022-11-06
+- ECR 리포지토리 : jg-lambda-ensemble-image / 6.905 GB
+- ECR 리포지토리 : onnx_lambda_container_arm / 6.296 GB
+- ECR 리포지토리 : jg-seq-nasnetmobile / 6.036 GB
+	- 람다 함수 : jg-lambda-ensemble-nasnetmobile, 마지막 실행시간 : No Log Group
+- ECR 리포지토리 : torch_profiler_arm / 5.910 GB
+- ECR 리포지토리 : aws_inferentia / 3.476 GB
+- ECR 리포지토리 : lambda-container-example / 3.062 GB
+- ECR 리포지토리 : serving_mxnet_bert_arm / 2.936 GB
+- ECR 리포지토리 : torch_lambda_container_arm / 2.795 GB
+- ECR 리포지토리 : tflite_lambda_container / 2.271 GB
+- ECR 리포지토리 : sungjae-sps-lambda / 2.240 GB
+- ECR 리포지토리 : sungjae-ecr-repo / 1.655 GB
+- ECR 리포지토리 : jgtfservinglambdab907d6f5/tensorflowinferencefunction402a36b7repo / 1.564 GB
+	- 람다 함수 : jg-tfserving-lambda-TensorFlowInferenceFunction-9CYNciRr17BO, 마지막 실행시간 : No Log Group
+- ECR 리포지토리 : jg-seq-mobilenet / 1.509 GB
+- ECR 리포지토리 : sungjae-spotinfo-ecr / 1.477 GB
+- ECR 리포지토리 : jgtfservingmobilenetv2201ea088/tensorflowinferencefunction402a36b7repo / 1.418 GB
+	- 람다 함수 : jg-tfserving-mobilenetv2-TensorFlowInferenceFuncti-HTqpYnEEERUU, 마지막 실행시간 : No Log Group
+- ECR 리포지토리 : tvm_lambda_container_origin / 1.280 GB
+- ECR 리포지토리 : tflite_lambda_container_arm / 1.276 GB
+- ECR 리포지토리 : serving_arm_base / 1.177 GB
+- ECR 리포지토리 : jgxgboostlambdafb3860c3/xgboostinferencefunction8eed4b10repo / 0.727 GB
+	- 람다 함수 : jg-xgboost-lambda-XGBoostInferenceFunction-drYLLiKxz2cE, 마지막 실행시간 : No Log Group
+- ECR 리포지토리 : sss_db / 0.415 GB
+- ECR 리포지토리 : jgscikitlambdad958a065/scikitlearninferencefunctionc862108arepo / 0.350 GB
+	- 람다 함수 : jg-scikit-lambda-ScikitLearnInferenceFunction-oNO522GbKTOS, 마지막 실행시간 : No Log Group
+- ECR 리포지토리 : myapp / 0.348 GB
+- ECR 리포지토리 : kubia / 0.264 GB
+- ECR 리포지토리 : jgsamfaae96cb/helloworldfunction19d43fc4repo / 0.176 GB
+- ECR 리포지토리 : lambda_optimize_serving_arm / 0.000 GB
+### us-east-1
+- ECR 리포지토리 : ys-profet_for_lambda_container / 5.544 GB
+### us-east-2
+- ECR 리포지토리 : billing / 0.628 GB
+- ECR 리포지토리 : fargate-image / 0.130 GB
+### ap-northeast-2
+- ECR 리포지토리 : lambda-container-example-yoon / 0.000 GB
