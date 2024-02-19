@@ -6,6 +6,7 @@ import boto3
 import json, urllib.request, os
 from datetime import datetime, timezone, timedelta
 from aws_searched_instance_information import get_instance_information, get_run_instance_information
+from slack_msg_sender import send_slack_message
 
 
 # date information for searching daily logs in cloud trail service
@@ -32,9 +33,9 @@ def daily_instance_usage(regions):
                 all_daily_instance.update(searched_instances(region, mode, all_daily_instance))
 
         except KeyError as keyerror:
-            print(f'{region} $ {keyerror}')
+            send_slack_message(f'daily_instance_usage() : KeyError in relation to {keyerror} in {region}')
         except Exception as e:
-            print(f"{region} > {e}")
+            send_slack_message(f'daily_instance_usage() : Exception in relation to {e} in {region}')
     return all_daily_instance
 
 
@@ -144,7 +145,7 @@ def created_message(all_daily_instance):
                     message += "On-demand :large_orange_diamond:\n"
 
     except Exception as e:
-        print(f"created_message() error as {e}")
+        send_slack_message(f"created_message() : Exception in relation to {e}")
 
     return header, message
 
