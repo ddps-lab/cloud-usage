@@ -18,7 +18,7 @@ STARTDAY = ENDDAY + timedelta(days=-1)
 ENDTIME = int(datetime(int(ENDDAY.strftime("%Y")), int(ENDDAY.strftime("%m")), int(ENDDAY.strftime("%d")), 15, 0, 0).timestamp())
 STARTTIME = int(datetime(int(STARTDAY.strftime("%Y")), int(STARTDAY.strftime("%m")), int(STARTDAY.strftime("%d")), 15, 0, 0).timestamp())
 
-SLACK_URL = os.environ['SLACK_TEST']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
