@@ -11,7 +11,7 @@ from slack_msg_sender import send_slack_message
 
 # date information for searching daily logs in cloud trail service
 TODAY = datetime.now(timezone.utc) + timedelta(hours=9)
-ENDDAY = TODAY + timedelta(days=-6)
+ENDDAY = TODAY
 STARTDAY = ENDDAY + timedelta(days=-1)
 
 # transformated unix timestamp beacus of cloud trail service searching condition
