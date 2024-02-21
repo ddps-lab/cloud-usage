@@ -30,7 +30,7 @@ def daily_instance_usage(regions):
     for region in regions:
         try:
             for mode in searched_modes:
-                all_daily_instance.update(searched_instances(region, mode, all_daily_instance))
+                all_daily_instance.update(search_instances(region, mode, all_daily_instance))
 
         except KeyError as keyerror:
             send_slack_message(f'daily_instance_usage() : KeyError in relation to {keyerror} in {region}')
@@ -39,8 +39,8 @@ def daily_instance_usage(regions):
     return all_daily_instance
 
 
-# searched_instances() : Collect instance information and call the following functions.
-def searched_instances(region, mode, all_daily_instance):
+# search_instances() : Collect instance information and call the following functions.
+def search_instances(region, mode, all_daily_instance):
     # search the logs on selected mode
     cloudtrail = boto3.client('cloudtrail', region_name=region)
     response = cloudtrail.lookup_events(
@@ -59,7 +59,7 @@ def searched_instances(region, mode, all_daily_instance):
     if mode == "RunInstances" or mode == "StartInstances":
         all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance)
     else:
-        all_daily_instance = get_stop_instancess(cloudtrail, response, all_daily_instance)
+        all_daily_instance = get_stop_instances(cloudtrail, response, all_daily_instance)
     return all_daily_instance
 
 
@@ -93,8 +93,8 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance):
     return all_daily_instance
 
 
-# get_stop_instancess() : It stores the instance information of the 'terminate' and 'stop' state.
-def get_stop_instancess(cloudtrail, response, all_daily_instance):
+# get_stop_instances() : It stores the instance information of the 'terminate' and 'stop' state.
+def get_stop_instances(cloudtrail, response, all_daily_instance):
     for events in response['Events']:
         instance_id = events['Resources'][0]['ResourceName']
         event_time = events['EventTime'].replace(tzinfo=None)
@@ -112,8 +112,8 @@ def get_stop_instancess(cloudtrail, response, all_daily_instance):
     return all_daily_instance
 
 
-# created_message() : Create a message to send to Slack.
-def created_message(all_daily_instance):
+# create_message() : Create a message to send to Slack.
+def create_message(all_daily_instance):
     header = f"*Daily Instances Usage Report (DATE: {STARTDAY.strftime('%Y-%m-%d')})*"
     message = ""
     
@@ -150,8 +150,8 @@ def created_message(all_daily_instance):
     return header, message
 
 
-# pushed_slack() : Push a message to Slack.
-def pushed_slack(message):
+# push_slack() : Push a message to Slack.
+def push_slack(message):
     payload = {"text": message}
     data = json.dumps(payload).encode("utf-8")
 
@@ -169,13 +169,13 @@ def lambda_handler(event, context):
     all_daily_instance = daily_instance_usage(regions)
 
     # created message to slack and pushed to slack
-    header, message = created_message(all_daily_instance)
-    pushed_slack(header)
+    header, message = create_message(all_daily_instance)
+    push_slack(header)
 
     # exception because of empty start instances or stop instances
     try:
-        pushed_slack(message)
+        push_slack(message)
     except Exception:
-        pushed_slack("Empty")
+        push_slack("Empty")
 
     return "perfect jobs. check the slack message, plz."

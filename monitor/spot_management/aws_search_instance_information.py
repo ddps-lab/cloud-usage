@@ -3,16 +3,16 @@ import json
 
 # get_instance_information() : Call other functions to get information about the 'run instance'.
 def get_instance_information(cloudtrail, run_instance_id, daily_instances):
+    result = False
     token, response = get_run_instance(cloudtrail, run_instance_id)
 
-    result, daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
-
-    if result:
-        return daily_instances
+    if token == False:
+        result, daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
     else:
-        while(result == False):
+        while(token == True):
             token, response = get_next_run_instance(cloudtrail, run_instance_id, response['NextToken'])
-            result, daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
+        result, daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
+
     return daily_instances
 
 
