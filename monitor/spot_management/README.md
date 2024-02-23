@@ -1,10 +1,8 @@
 # aws_daily_instance_usage_report.py
 ## values
-### 1. 클라우드 트레일 서비스 검색 필터를 위한 DATE 및 TIMESTAMP 상수 수집
-- 클라우드 트레일 서비스에서 정확한 기간동안 로그를 수집하기 위해 UTC TIME을 기반으로 시작 시간과 종료 시간을 수집한다.
-- 클라우드 트레일 서비스의 검색을 위해 시작 시간과 종료 시간을 UTC TIME 에서 UNIX TIMESTAMP 으로 변환하고 이 값을 저장한다.
-### 2. SLACK 으로 메세지를 전송하기 위해 람다 서비스 환경변수에 저장된 URL 선언
+### 1. SLACK 으로 메세지를 전송하기 위해 람다 서비스 환경변수에 저장된 URL 선언
 - 사전에 람다 서비스 환경변수에 저장해둔 URL을 코드에서 사용하기 위해 저장한다.
+
 
 ## def daily_instance_usage(regions):
     : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
@@ -19,15 +17,13 @@
 - 이러한 점 때문에, 각 리전에 4가지 종류를 시도한다.
 
 
-## def search_instances(region, mode, all_daily_instance):
+## def search_instances(cloudtrail, eventname, item, token, start_date, end_date, token_code):
     : Collect instance information and call the following functions.
+- 클라우드 트레일 서비스의 검색을 위해 시작 시간과 종료 시간을 UTC TIME 에서 UNIX TIMESTAMP 으로 변환한다.
 - 설정된 이벤트 모드에 따라 실제 클라우드 트레일 서비스 API를 통해 검색을 시도한다.
-- 이벤트 모드가 인스턴스 시작에 해당되는 'run', 'start' 에 속하는 경우 get_start_instances(mode, cloudtrail, response, all_daily_instance)를 호출한다.
-- 이벤트 모드가 인스턴스 종료에 해당되는 'stop', 'terminate' 에 속하는 경우 get_stop_instancess(cloudtrail, response, all_daily_instance)를 호출한다.
-- 인스턴스 사용량은 Dictionary로 저장하고, Key는 인스턴스의 아이디이다.
 
 
-## get_start_instances(mode, cloudtrail, response, all_daily_instance)
+## get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
     : It stores the instance information of the 'creat' and 'start' state.
 - 'run'과 'start' 이벤트로써 검색된 목록은 모두 검색일 당일 인스턴스가 켜졌다는 것을 의미한다.
 - 인스턴스 사용량을 저장하기 위하여 모든 인스턴스 아이디를 Dictionary의 Key로 저장한다.
@@ -35,8 +31,8 @@
 
 ### 현재 이벤트의 인스턴스 아이디가 Key로 없는 경우
 - 현재 이벤트가 인스턴스 사용량을 저장한 Dictionary에 없는 경우 사용량이 기록되지 않은 이벤트이기 때문에 이 이벤트에서 필요한 모든 정보를 추출한다.
-- 이벤트를 실행한 User의 이름과 이벤트 시작 시간을 일차적으로 저장한다.
-- 이 외의 리전이나 인스턴스 유형(ex, t2.micro), 스팟 인스턴스 여부, Name 태그는 이벤트 모드에 따라 함수를 호출하여 수집한다.
+- 이벤트 시작 시간을 일차적으로 저장한다.
+- 이 외의 리전이나 인스턴스 유형(ex, t2.micro), 스팟 인스턴스 여부, Name 태그, Username은 이벤트 모드에 따라 함수를 호출하여 수집한다.
     - 리전이나 스팟 여부 등의 정보는 run instance event에서만 수집해올 수 있다.
     - 따라서 이미 검색한 이벤트 모드가 run instance 일 경우에는 get_run_instance_information(response, instance_id, all_daily_instance) 함수를 호출하여 수집해온다.
     - 이 외에 start instance 일 경우에는 run instance를 검색하는 get_instance_information(cloudtrail, instance_id, all_daily_instance) 함수를 호출하여 현재 인스턴스 아이디와 일치하는 run instance 검색 결과에서 정보를 수집해온다.
@@ -46,11 +42,11 @@
 - 지금 이벤트 시간이 인스턴스 정보 중 최근 Start Time 시간으로 저장되어 있지 않는다면 현재 이벤트 시간을 최신으로 반영하여 저장한다.
 
 
-## def get_stop_instances(cloudtrail, response, all_daily_instance):
+## def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
     : It stores the instance information of the 'terminate' and 'stop' state.
 - 'stop'과 'terminate' 이벤트로 검색된 목록은 모두 검색일 당일 인스턴스가 꺼졌다는 것을 의미한다.
 - 인스턴스 사용량을 저장하기 위하여 모든 인스턴스 아이디를 Dictionary의 Key로 저장한다.
-- 'stop'과 'terminate' 이벤트의 응답 결과는 완전히 일치하기 때문에 인스턴스 아이디가 Dictionary에 존재하는지만 판단한다.
+- 'stop'과 'terminate' 이벤트의 응답 결과는 완전히 일치하기 때문에 인스턴스 아이디가 Dictionary에 존재하는지만 판단한다. (기능 수정 예정)
 
 ### 현재 이벤트의 인스턴스 아이디가 Key로 저장되어 있는 경우
 - 현재 이벤트가 Key로 저장되어 있다는 것은 검색하는 당일에 인스턴스가 켜졌다는 것을 의미한다.
@@ -60,6 +56,28 @@
 ### 현재 이벤트의 인스턴스 아이디가 Key로 없는 경우
 - 검색일 보다 이전에 시작된 인스턴스가 존재하여 검색 당일에는 시작된 인스턴스가 없는 경우 종료 이벤트임에도 불구하고 Dictionary에서 Key를 찾을 수 없다.
 - 이 경우 User 이름이나 이벤트 종료 시간을 저장한 후 리전이나 스팟 여부 등의 정보는 get_instance_information(cloudtrail, instance_id, all_daily_instance) 함수를 호출하여 수집해온다.
+
+
+## def get_instance_ids(events):
+    : Collect instance IDs to extract information for all instances in an event
+- 하나의 이벤트 값 안에 여러 개의 인스턴스가 실행된 경우, 모든 인스턴스의 아이디를 수집한다.
+- 콘솔에서 2개 이상의 인스턴스에 start, stop, terminate를 할 시 하나의 이벤트로 기록되어 시간 수집이 누락되는 경우가 있었다.
+- 이를 방지하고자 모든 인스턴스 아이디를 제대로 수집할 수 있도록 한다.
+
+
+## def search_instance_information(cloudtrail, run_instance_id, daily_instances, END_DATE):
+    : Call other functions to get information about the 'run instance'.
+- 받아온 인스턴스 아이디를 토대로 인스턴스가 처음 생성되었을 run instance event를 찾는다.
+- get_run_instance(cloudtrail, run_instance_id)를 호출하여 이벤트를 검색하는데, 인스턴스의 이벤트가 50개 이내일 경우 단 한 번의 함수 호출로도 이벤트를 찾아낼 수 있다.
+- 50개 이내에 찾고자 했던 run instance event 정보가 있었다면 get_run_instance_information(response, run_instance_id, daily_instances) 함수를 호출하여 인스턴스 정보를 수집한 후 이 정보를 반환한다.
+- 만약 50개 이상의 이벤트가 존재하여 한 번의 검색으로 찾을 수 없었다면, 그 다음 50개를 검색하기 위해 존재하는 token 값을 이용하여 다음 50개 항목 중에 run instance event를 찾아낸다.
+    - 이때, 인스턴스 아이디의 가장 첫번째 이벤트가 run instance event 라는 점을 이용하여 token 값이 없을 때까지 검색을 시도하고, token의 값이 없을 때의 검색 결과를 get_run_instance_information(response, run_instance_id, daily_instances) 함수의 파라미터로 넣어 인스턴스의 정보를 알아낸다.
+
+
+## def get_run_instance_information(response, run_instance_id, daily_instances):
+    : Store the necessary information from the extracted data.
+- 검색된 결과에서 인스턴스 아이디를 Key로 하여 Dictionary에 필요한 데이터를 저장한다.
+- run instance event에서만 알 수 있는 정보가 저장되며, 리전이나 인스턴스 유형(ex. t2.micro), 스팟 인스턴스 여부 및 네임 태그 정보를 수집할 수 있다.
 
 
 ## def create_message(all_daily_instance):
@@ -95,41 +113,14 @@
 
 
 ## def lambda_handler(event, context):
+### 1. 클라우드 트레일 서비스 검색 필터를 위한 DATE 상수 수집
+- 클라우드 트레일 서비스에서 정확한 기간동안 로그를 수집하기 위해 UTC TIME을 기반으로 검색일을 수집한다.
+
+### 코드 동작 설명
 - 현재 계정에 활성화된 모든 리전을 검색하고 리스트로 만든다.
 - 인스턴스 사용량을 검색한다.
 - 슬랙에 만들 메세지를 생성한다.
 - 슬랙으로 메세지를 보낸다.
-
-
-
-# aws_searched_instance_information.py
-## def get_instance_information(cloudtrail, run_instance_id, daily_instances):
-    : Call other functions to get information about the 'run instance'.
-- 받아온 인스턴스 아이디를 토대로 인스턴스가 처음 생성되었을 run instance event를 찾는다.
-- get_run_instance(cloudtrail, run_instance_id)를 호출하여 이벤트를 검색하는데, 인스턴스의 이벤트가 50개 이내일 경우 단 한 번의 함수 호출로도 이벤트를 찾아낼 수 있다.
-- 50개 이내에 찾고자 했던 run instance event 정보가 있었다면 get_run_instance_information(response, run_instance_id, daily_instances) 함수를 호출하여 인스턴스 정보를 수집한 후 이 정보를 반환한다.
-- 만약 50개 이상의 이벤트가 존재하여 한 번의 검색으로 찾을 수 없었다면, 그 다음 50개를 검색하기 위해 존재하는 token 값을 이용하여 다음 50개 항목 중에 run instance event를 찾아낸다.
-    - 이때, 인스턴스 아이디의 가장 첫번째 이벤트가 run instance event 라는 점을 이용하여 token 값이 없을 때까지 검색을 시도하고, token의 값이 없을 때의 검색 결과를 get_run_instance_information(response, run_instance_id, daily_instances) 함수의 파라미터로 넣어 인스턴스의 정보를 알아낸다.
-
-
-## def get_run_instance(cloudtrail, run_instance_id):
-    : Get information on 'run instance' during the first search or 50 or fewer cloud trail service searches.
-- 인스턴스 아이디를 조건으로 클라우드 트레일 서비스의 API를 이용하여 검색한다.
-- 50개의 이벤트 이상이라 token 값이 나온 경우, token이 존재한다는 의미로 token을 True로 바꾸며 검색 결과와 함께 리턴한다.
-
-
-## def get_next_run_instance(cloudtrail, run_instance_id, token_code):
-    : Get information from 'run instance' from more than 50 cloud trail service searches.
-- get_run_instance(cloudtrail, run_instance_id) 함수에 token 코드를 추가로 검색하는 함수이다.
-- 클라우드 트레일 서비스의 API 검색 특징 상 token을 파라미터로 넣는가, 넣지 않는 가는 완전히 검색 결과를 초래하기 때문에 분리하였다.
-- token의 유무를 True/False 으로 구분하며 검색 결과와 함께 리턴한다.
-
-
-## def get_run_instance_information(response, run_instance_id, daily_instances):
-    : Store the necessary information from the extracted data.
-- 검색된 결과에서 인스턴스 아이디를 Key로 하여 Dictionary에 필요한 데이터를 저장한다.
-- run instance event에서만 알 수 있는 정보가 저장되며, 리전이나 인스턴스 유형(ex. t2.micro), 스팟 인스턴스 여부 및 네임 태그 정보를 수집할 수 있다.
-
 
 
 # 기능
