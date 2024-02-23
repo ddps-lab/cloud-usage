@@ -34,9 +34,9 @@ def daily_instance_usage(regions, END_DATE):
                 all_daily_instance.update()
 
         except KeyError as keyerror:
-            send_slack_message(f'daily_instance_usage() : KeyError in relation to {keyerror} in {region}')
+            print(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
         except Exception as e:
-            send_slack_message(f'daily_instance_usage() : Exception in relation to {e} in {region}')
+            print(f'daily_instance_usage() : Exception in relation to "{e}" in "{region}"')
         continue
     return all_daily_instance
 
@@ -85,26 +85,22 @@ def search_instances(cloudtrail, eventname, item, token, start_date, end_date, t
 def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE):
     for events in response['Events']:
 
-        # get instance id in result of cloud trail service
-        event_informations = json.loads(events['CloudTrailEvent'])
-        instances = event_informations['responseElements']['instancesSet']['items']
-        for n in range(len(instances)):
-            instance_id = instances[n]['instanceId']
+        instance_ids, event_time = get_instance_ids(events)
 
-        # store new instance information
-        event_time = events['EventTime'].replace(tzinfo=None)
-        if instance_id not in all_daily_instance:
-            all_daily_instance[instance_id] = {'UserName': events['Username'], 'state': [{'StartTime': event_time}]}
-            if mode == "RunInstances":
-                all_daily_instance = get_run_instance_information(response, instance_id, all_daily_instance)
+        for instance_id in instance_ids:
+            # store new instance information
+            if instance_id not in all_daily_instance:
+                all_daily_instance[instance_id] = {'state': [{'StartTime': event_time}]}
+                if mode == "RunInstances":
+                    all_daily_instance = get_run_instance_information(events, instance_id, all_daily_instance)
+                else:
+                    all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
+
+            # add the start time information of instance to daily instance list
             else:
-                all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
-
-        # add the start time information of instance to daily instance list
-        else:
-            sequence = len(all_daily_instance[instance_id]['state']) - 1
-            if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
-                all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
+                sequence = len(all_daily_instance[instance_id]['state']) - 1
+                if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
+                    all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
 
     return all_daily_instance
 
@@ -112,55 +108,70 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
 # get_stop_instances() : It stores the instance information of the 'terminate' and 'stop' state.
 def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
     for events in response['Events']:
-        instance_id = events['Resources'][0]['ResourceName']
-        event_time = events['EventTime'].replace(tzinfo=None)
-
-        # add the stop time information of instance to daily instance list
-        if instance_id in all_daily_instance:
-            for info in range(0, len(all_daily_instance[instance_id]['state'])):
-                if all_daily_instance[instance_id]['state'][info]['StartTime'] < event_time:
-                    all_daily_instance[instance_id]['state'][info]['StopTime'] = event_time
         
-        # store new instance information
-        else:
-            all_daily_instance[instance_id] = {'UserName': events['Username'], 'state': [{'StopTime': event_time}]}
-            all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
+        instance_ids, event_time = get_instance_ids(events)
+
+        for instance_id in instance_ids:
+            # add the stop time information of instance to daily instance list
+            if instance_id in all_daily_instance:
+                for info in range(0, len(all_daily_instance[instance_id]['state'])):
+                    if all_daily_instance[instance_id]['state'][info]['StartTime'] < event_time:
+                        all_daily_instance[instance_id]['state'][info]['StopTime'] = event_time
+            
+            # store new instance information
+            else:
+                all_daily_instance[instance_id] = {'state': [{'StopTime': event_time}]}
+                all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
     return all_daily_instance
+
+
+# get_instance_ids() : Collect instance IDs to extract information for all instances in an event
+def get_instance_ids(events):
+
+    # get instance id in result of cloud trail service
+    event_informations = json.loads(events['CloudTrailEvent'])
+    instances = event_informations['responseElements']['instancesSet']['items']
+    instance_ids = []
+    for n in range(len(instances)):
+        instance_ids.append(instances[n]['instanceId'])
+            
+    event_time = events['EventTime'].replace(tzinfo=None)
+
+    return instance_ids, event_time
 
 
 # search_instance_information() : Call other functions to get information about the 'run instance'.
 def search_instance_information(cloudtrail, run_instance_id, daily_instances, END_DATE):
     token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, END_DATE + timedelta(days=-90), END_DATE, None)
 
-    if token == False:
-        daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
-    else:
+    if token:
         while(token):
             token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, token, END_DATE + timedelta(days=-90), END_DATE, response['NextToken'])
-        daily_instances = get_run_instance_information(response, run_instance_id, daily_instances)
+    for events in response['Events']:
+        if events.get('EventName') == 'RunInstances':
+            daily_instances = get_run_instance_information(events, run_instance_id, daily_instances)
 
     return daily_instances
 
 
 # get_run_instance_information() : Store the necessary information from the extracted data.
-def get_run_instance_information(response, run_instance_id, daily_instances):
-    for events in response['Events']:
-        if events['EventName'] == 'RunInstances':
-            event_informations = json.loads(events['CloudTrailEvent'])
-            daily_instances[run_instance_id]['Region'] = event_informations['awsRegion']
-            daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters']['instanceType']
+def get_run_instance_information(events, run_instance_id, daily_instances):
+    event_informations = json.loads(events['CloudTrailEvent'])
+    daily_instances[run_instance_id]['Region'] = event_informations['awsRegion']
+    daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters']['instanceType']
+    daily_instances[run_instance_id]['UserName'] = events['Username']
             
-            try:
-                if event_informations['requestParameters']['instanceMarketOptions']['marketType']:
-                    daily_instances[run_instance_id]['Spot'] = True
-            except KeyError:
-                daily_instances[run_instance_id]['Spot'] = False
+    try:
+        if event_informations['requestParameters']['instanceMarketOptions']['marketType']:
+            daily_instances[run_instance_id]['Spot'] = True
+    except KeyError:
+        daily_instances[run_instance_id]['Spot'] = False
 
-            try:
-                name_tag = event_informations['requestParameters']['tagSpecificationSet']['items'][0]['tags'][0]['value']
-                daily_instances[run_instance_id]['NameTag'] = name_tag
-            except Exception:
-                daily_instances[run_instance_id]['NameTag'] = daily_instances[run_instance_id]['UserName']
+    try:
+        name_tag = event_informations['requestParameters']['tagSpecificationSet']['items'][0]['tags'][0]['value']
+        daily_instances[run_instance_id]['NameTag'] = name_tag
+    except Exception:
+        daily_instances[run_instance_id]['NameTag'] = daily_instances[run_instance_id]['UserName']
 
     return daily_instances
 
@@ -199,7 +210,7 @@ def create_message(all_daily_instance, search_date):
                     message += "On-demand :large_orange_diamond:\n"
 
     except Exception as e:
-        send_slack_message(f"created_message() : Exception in relation to {e}")
+        print(f"created_message() : Exception in relation to {e}")
 
     return header, message
 
