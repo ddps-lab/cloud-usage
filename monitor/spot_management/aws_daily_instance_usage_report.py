@@ -15,21 +15,30 @@ SLACK_URL = os.environ['SLACK_DDPS']
 def daily_instance_usage(regions, END_DATE):
     all_daily_instance = {}
     search_modes = ["RunInstances", "StartInstances", "TerminateInstances", "StopInstances"]
-
+    
     # store cloud trail logs of all region
     for region in regions:
         try:
             for mode in search_modes:
                 cloudtrail = boto3.client('cloudtrail', region_name=region)
 
-                token, response = search_instances(cloudtrail, "EventName", mode, False, END_DATE + timedelta(days=-1), END_DATE)
+                token, token_code = True, None
+                while(token):
 
-                # call the following functions according to the selected mode
-                # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
-                if mode == "RunInstances" or mode == "StartInstances":
-                    all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
-                else:
-                    all_daily_instance = get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE)
+                    if token == True and token_code == None:
+                        token = False
+
+                    token, response = search_instances(cloudtrail, "EventName", mode, token, END_DATE + timedelta(days=-1), END_DATE, token_code)
+
+                    # call the following functions according to the selected mode
+                    # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
+                    if mode == "RunInstances" or mode == "StartInstances":
+                        all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
+                    else:
+                        all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
+                
+                    if response.get('NextToken') != None:
+                        token_code = response['NextToken']
                     
         except KeyError as keyerror:
             print(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
@@ -40,7 +49,7 @@ def daily_instance_usage(regions, END_DATE):
 
 
 # search_instances() : search the instance as cloud trail service.
-def search_instances(cloudtrail, eventname, item, token, start_date, end_date, token_code=''):
+def search_instances(cloudtrail, eventname, item, token, start_date, end_date, token_code):
     # transformated unix timestamp beacus of cloud trail service searching condition
     END_TIME = int(datetime(int(end_date.strftime("%Y")), int(end_date.strftime("%m")), int(end_date.strftime("%d")), 15, 0, 0).timestamp())
     START_TIME = int(datetime(int(start_date.strftime("%Y")), int(start_date.strftime("%m")), int(start_date.strftime("%d")), 15, 0, 0).timestamp())
@@ -85,7 +94,7 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
         instance_ids, event_time = get_instance_ids(events)
 
         if instance_ids == None:
-            return all_daily_instance
+            continue
 
         for instance_id in instance_ids:
             # store new instance information
@@ -100,7 +109,7 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
             else:
                 # Ignore RunInstances event duplication
                 if mode == "RunInstances":
-                    continue                
+                    continue
                 sequence = len(all_daily_instance[instance_id]['state']) - 1
                 if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
                     all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
@@ -108,9 +117,9 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
 
 
 # get_stop_instances() : It stores the instance information of the 'terminate' and 'stop' state.
-def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
+def get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE):
     for events in response['Events']:
-        
+
         instance_ids, event_time = get_instance_ids(events)
 
         if instance_ids == None:
@@ -120,6 +129,9 @@ def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
             # add the stop time information of instance to daily instance list
             if instance_id in all_daily_instance:
                 for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
+                    if sequence == 0 and mode == 'TerminateInstances':
+                        if all_daily_instance[instance_id]['state'][0].get('StopTime') != None:
+                            break
                     search_date = END_DATE + timedelta(days=-1)
                     search_start_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0)
                     start_time = all_daily_instance[instance_id]['state'][sequence].get('StartTime')
@@ -138,6 +150,9 @@ def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
             
             # store new instance information
             else:
+                # Start only terminate
+                if mode == "TerminateInstances":
+                    continue
                 add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE)
     return all_daily_instance
 
@@ -146,14 +161,20 @@ def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
 def get_instance_ids(events):
     # get instance id in result of cloud trail service
     event_informations = json.loads(events['CloudTrailEvent'])
+    instance_ids = []
 
     if event_informations.get('responseElements') == None:
-        return None, 0
-
-    instances = event_informations['responseElements']['instancesSet']['items']
-    instance_ids = []
-    for n in range(len(instances)):
-        instance_ids.append(instances[n]['instanceId'])
+        try:
+            for resource in events['Resources']:
+                if resource['ResourceType'] == 'AWS::EC2::Instance':
+                    instance_ids.append(resource['ResourceName'])
+        except KeyError:
+            return None, 0
+    
+    else:
+        instances = event_informations['responseElements']['instancesSet']['items']
+        for n in range(len(instances)):
+            instance_ids.append(instances[n]['instanceId'])
             
     event_time = events['EventTime'].replace(tzinfo=None)
 
@@ -171,7 +192,7 @@ def add_new_instance_information(cloudtrail, instance_id, all_daily_instance, ev
 
 # search_instance_information() : Call other functions to get information about the 'run instance'.
 def search_instance_information(cloudtrail, run_instance_id, daily_instances, END_DATE):
-    token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, END_DATE + timedelta(days=-90), END_DATE)
+    token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, END_DATE + timedelta(days=-90), END_DATE, None)
 
     if token:
         while(token):
@@ -185,15 +206,14 @@ def search_instance_information(cloudtrail, run_instance_id, daily_instances, EN
 
 # get_run_instance_information() : Store the necessary information from the extracted data.
 def get_run_instance_information(events, run_instance_id, daily_instances):
-    event_informations = json.loads(events['CloudTrailEvent'])
-    daily_instances[run_instance_id]['Region'] = event_informations['awsRegion']
-    daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters']['instanceType']
-    daily_instances[run_instance_id]['UserName'] = events['Username']
-            
-    try:
-        if event_informations['requestParameters']['instanceMarketOptions']['marketType']:
-            daily_instances[run_instance_id]['Spot'] = True
-    except KeyError:
+    event_informations = json.loads(events.get('CloudTrailEvent'))
+    daily_instances[run_instance_id]['Region'] = event_informations.get('awsRegion')
+    daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters'].get('instanceType')
+    daily_instances[run_instance_id]['UserName'] = events.get('Username')
+
+    if event_informations['requestParameters'].get('instanceMarketOptions') != None:
+        daily_instances[run_instance_id]['Spot'] = True
+    else:
         daily_instances[run_instance_id]['Spot'] = False
 
     try:

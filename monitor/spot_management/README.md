@@ -46,7 +46,7 @@
     : It stores the instance information of the 'terminate' and 'stop' state.
 - 'stop'과 'terminate' 이벤트로 검색된 목록은 모두 검색일 당일 인스턴스가 꺼졌다는 것을 의미한다.
 - 인스턴스 사용량을 저장하기 위하여 모든 인스턴스 아이디를 Dictionary의 Key로 저장한다.
-- 'stop'과 'terminate' 이벤트의 응답 결과는 완전히 일치하기 때문에 인스턴스 아이디가 Dictionary에 존재하는지만 판단한다. (기능 수정 예정)
+- 'stop'과 'terminate' 이벤트의 응답 결과는 완전히 일치하기 때문에 인스턴스 아이디가 Dictionary에 존재하는지만 판단한다.
 
 ### 현재 이벤트의 인스턴스 아이디가 Key로 저장되어 있는 경우
 - 현재 이벤트가 Key로 저장되어 있다는 것은 검색하는 당일에 인스턴스가 켜졌다는 것을 의미한다.
