@@ -65,6 +65,14 @@
 - 이를 방지하고자 모든 인스턴스 아이디를 제대로 수집할 수 있도록 한다.
 
 
+## def add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE):
+    : Collect information when the input instance has new information
+- Run-Start-Stop-Terminate 순으로 이벤트를 수집하는데, Stop 또는 Terminate 이벤트를 실행할 때 검색 당일 Run 또는 Start 를 하지 않았을 경우 인스턴스의 정보 수집을 위해 실행한다.
+- 정확한 검색을 위해 확인하던 절차 중 코드 재사용성을 높이기 위해 함수로 제작하였다.
+    - 같은 인스턴스가 간혹 중복으로 Terminate를 한 후 다시 Terminate를 하는 경우가 있다.
+    - Run이나 Start를 하지 않았을 경우에는 인스턴스 목록 자체를 날리고 새로 생성하기 위해 함수 내 코드르 다시 반복할 필요가 있었고, 이를 위해 함수로 제작하여 재사용성을 높였다.
+
+
 ## def search_instance_information(cloudtrail, run_instance_id, daily_instances, END_DATE):
     : Call other functions to get information about the 'run instance'.
 - 받아온 인스턴스 아이디를 토대로 인스턴스가 처음 생성되었을 run instance event를 찾는다.

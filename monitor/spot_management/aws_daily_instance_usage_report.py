@@ -22,7 +22,7 @@ def daily_instance_usage(regions, END_DATE):
             for mode in search_modes:
                 cloudtrail = boto3.client('cloudtrail', region_name=region)
 
-                token, response = search_instances(cloudtrail, "EventName", mode, False, END_DATE + timedelta(days=-1), END_DATE, None)
+                token, response = search_instances(cloudtrail, "EventName", mode, False, END_DATE + timedelta(days=-1), END_DATE)
 
                 # call the following functions according to the selected mode
                 # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
@@ -31,8 +31,6 @@ def daily_instance_usage(regions, END_DATE):
                 else:
                     all_daily_instance = get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE)
                     
-                all_daily_instance.update()
-
         except KeyError as keyerror:
             print(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
         except Exception as e:
@@ -42,7 +40,7 @@ def daily_instance_usage(regions, END_DATE):
 
 
 # search_instances() : search the instance as cloud trail service.
-def search_instances(cloudtrail, eventname, item, token, start_date, end_date, token_code):
+def search_instances(cloudtrail, eventname, item, token, start_date, end_date, token_code=''):
     # transformated unix timestamp beacus of cloud trail service searching condition
     END_TIME = int(datetime(int(end_date.strftime("%Y")), int(end_date.strftime("%m")), int(end_date.strftime("%d")), 15, 0, 0).timestamp())
     START_TIME = int(datetime(int(start_date.strftime("%Y")), int(start_date.strftime("%m")), int(start_date.strftime("%d")), 15, 0, 0).timestamp())
@@ -84,8 +82,10 @@ def search_instances(cloudtrail, eventname, item, token, start_date, end_date, t
 # get_start_instances() : It stores the instance information of the 'creat' and 'start' state.
 def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE):
     for events in response['Events']:
-
         instance_ids, event_time = get_instance_ids(events)
+
+        if instance_ids == None:
+            return all_daily_instance
 
         for instance_id in instance_ids:
             # store new instance information
@@ -98,10 +98,12 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
 
             # add the start time information of instance to daily instance list
             else:
+                # Ignore RunInstances event duplication
+                if mode == "RunInstances":
+                    continue                
                 sequence = len(all_daily_instance[instance_id]['state']) - 1
                 if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
                     all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
-
     return all_daily_instance
 
 
@@ -111,25 +113,43 @@ def get_stop_instances(cloudtrail, response, all_daily_instance, END_DATE):
         
         instance_ids, event_time = get_instance_ids(events)
 
+        if instance_ids == None:
+            return all_daily_instance
+
         for instance_id in instance_ids:
             # add the stop time information of instance to daily instance list
             if instance_id in all_daily_instance:
-                for info in range(0, len(all_daily_instance[instance_id]['state'])):
-                    if all_daily_instance[instance_id]['state'][info]['StartTime'] < event_time:
-                        all_daily_instance[instance_id]['state'][info]['StopTime'] = event_time
+                for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
+                    search_date = END_DATE + timedelta(days=-1)
+                    search_start_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0)
+                    start_time = all_daily_instance[instance_id]['state'][sequence].get('StartTime')
+                    if search_start_time == start_time and len(all_daily_instance[instance_id]['state']) == 1:
+                        del all_daily_instance[instance_id]
+                        add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE)
+                        continue
+
+                    if start_time < event_time:
+                        all_daily_instance[instance_id]['state'][sequence]['StopTime'] = event_time
+                    else:
+                        previous_start_time = all_daily_instance[instance_id]['state'][sequence-1].get('StartTime')
+                        previous_stop_time = all_daily_instance[instance_id]['state'][sequence-1].get('StopTime')
+                        if previous_start_time != None and previous_start_time < event_time and previous_stop_time > event_time:
+                            all_daily_instance[instance_id]['state'][sequence-1]['StopTime'] = event_time
             
             # store new instance information
             else:
-                all_daily_instance[instance_id] = {'state': [{'StopTime': event_time}]}
-                all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
+                add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE)
     return all_daily_instance
 
 
 # get_instance_ids() : Collect instance IDs to extract information for all instances in an event
 def get_instance_ids(events):
-
     # get instance id in result of cloud trail service
     event_informations = json.loads(events['CloudTrailEvent'])
+
+    if event_informations.get('responseElements') == None:
+        return None, 0
+
     instances = event_informations['responseElements']['instancesSet']['items']
     instance_ids = []
     for n in range(len(instances)):
@@ -140,9 +160,18 @@ def get_instance_ids(events):
     return instance_ids, event_time
 
 
+# add_new_instance_information() : Collect information when the input instance has new information
+def add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE):
+    search_date = END_DATE + timedelta(days=-1)
+    search_start_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0)
+    all_daily_instance[instance_id] = {'state': [{'StartTime': search_start_time,'StopTime': event_time}]}
+    all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance, END_DATE)
+    return all_daily_instance
+
+
 # search_instance_information() : Call other functions to get information about the 'run instance'.
 def search_instance_information(cloudtrail, run_instance_id, daily_instances, END_DATE):
-    token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, END_DATE + timedelta(days=-90), END_DATE, None)
+    token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, END_DATE + timedelta(days=-90), END_DATE)
 
     if token:
         while(token):
@@ -150,7 +179,7 @@ def search_instance_information(cloudtrail, run_instance_id, daily_instances, EN
     for events in response['Events']:
         if events.get('EventName') == 'RunInstances':
             daily_instances = get_run_instance_information(events, run_instance_id, daily_instances)
-
+    
     return daily_instances
 
 
@@ -210,7 +239,7 @@ def create_message(all_daily_instance, search_date):
                     message += "On-demand :large_orange_diamond:\n"
 
     except Exception as e:
-        print(f"created_message() : Exception in relation to {e}")
+        print(f"create_message() : Exception in relation to {e}")
 
     return header, message
 
