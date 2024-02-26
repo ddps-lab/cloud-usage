@@ -12,39 +12,38 @@ SLACK_URL = os.environ['SLACK_DDPS']
 
 
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
-def daily_instance_usage(regions, END_DATE):
+def daily_instance_usage(region, END_DATE):
     all_daily_instance = {}
     search_modes = ["RunInstances", "StartInstances", "TerminateInstances", "StopInstances"]
     
     # store cloud trail logs of all region
-    for region in regions:
-        try:
-            for mode in search_modes:
-                cloudtrail = boto3.client('cloudtrail', region_name=region)
+    try:
+        for mode in search_modes:
+            cloudtrail = boto3.client('cloudtrail', region_name=region)
 
-                token, token_code = True, None
-                while(token):
+            token, token_code = True, None
+            while(token):
 
-                    if token == True and token_code == None:
-                        token = False
+                if token == True and token_code == None:
+                    token = False
 
-                    token, response = search_instances(cloudtrail, "EventName", mode, token, END_DATE + timedelta(days=-1), END_DATE, token_code)
+                token, response = search_instances(cloudtrail, "EventName", mode, token, END_DATE + timedelta(days=-1), END_DATE, token_code)
 
-                    # call the following functions according to the selected mode
-                    # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
-                    if mode == "RunInstances" or mode == "StartInstances":
-                        all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
-                    else:
-                        all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
+                # call the following functions according to the selected mode
+                # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
+                if mode == "RunInstances" or mode == "StartInstances":
+                    all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
+                else:
+                    all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
                 
-                    if response.get('NextToken') != None:
-                        token_code = response['NextToken']
+                if response.get('NextToken') != None:
+                    token_code = response['NextToken']
                     
-        except KeyError as keyerror:
-            print(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
-        except Exception as e:
-            print(f'daily_instance_usage() : Exception in relation to "{e}" in "{region}"')
-        continue
+    except KeyError as keyerror:
+        send_slack_message(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
+    except Exception as e:
+        send_slack_message(f'daily_instance_usage() : Exception in relation to "{e}" in "{region}"')
+
     return all_daily_instance
 
 
@@ -123,15 +122,12 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
         instance_ids, event_time = get_instance_ids(events)
 
         if instance_ids == None:
-            return all_daily_instance
+            continue
 
         for instance_id in instance_ids:
             # add the stop time information of instance to daily instance list
             if instance_id in all_daily_instance:
                 for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
-                    if sequence == 0 and mode == 'TerminateInstances':
-                        if all_daily_instance[instance_id]['state'][0].get('StopTime') != None:
-                            break
                     search_date = END_DATE + timedelta(days=-1)
                     search_start_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0)
                     start_time = all_daily_instance[instance_id]['state'][sequence].get('StartTime')
@@ -207,7 +203,6 @@ def search_instance_information(cloudtrail, run_instance_id, daily_instances, EN
 # get_run_instance_information() : Store the necessary information from the extracted data.
 def get_run_instance_information(events, run_instance_id, daily_instances):
     event_informations = json.loads(events.get('CloudTrailEvent'))
-    daily_instances[run_instance_id]['Region'] = event_informations.get('awsRegion')
     daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters'].get('instanceType')
     daily_instances[run_instance_id]['UserName'] = events.get('Username')
 
@@ -227,10 +222,8 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
 
 # create_message() : Create a message to send to Slack.
 def create_message(all_daily_instance, search_date):
-    header = f"*Daily Instances Usage Report (DATE: {search_date.strftime('%Y-%m-%d')})*"
     message = ""
-    
-    start_date = search_date + timedelta(days=-1)
+    count = 0
     try:
         for instance_id in all_daily_instance:
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
@@ -241,27 +234,30 @@ def create_message(all_daily_instance, search_date):
 
                 # when time information about start or stop not be in all daily instance
                 except KeyError:
-                    try:
-                        run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - datetime(int(start_date.strftime("%Y")), int(start_date.strftime("%m")), int(start_date.strftime("%d")), 15, 0, 0)
-                    except KeyError:
+                    if sequence == len(all_daily_instance[instance_id]['state']) - 1:
                         run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
+                    else:
+                        continue
 
                 if run_time.days == -1:
                     run_time = (-run_time)
 
                 # create the message about instance usage
-                message += f"{all_daily_instance[instance_id]['Region']} / {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / {run_time} 간 실행 / "
+                message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / {run_time} 간 실행 / "
 
                 # add emoji depending on whether spot instance is enabled
                 if all_daily_instance[instance_id]['Spot'] == True:
                     message += "Spot :large_blue_diamond:\n"
                 else:
                     message += "On-demand :large_orange_diamond:\n"
+                count += 1
 
+    except KeyError:
+        send_slack_message("create_message() : A problem collecting instance information. Related functions is get_run_instance_information()")
     except Exception as e:
-        print(f"create_message() : Exception in relation to {e}")
+        send_slack_message(f"create_message() : Exception in relation to {e}")
 
-    return header, message
+    return message, count
 
 
 # push_slack() : Push a message to Slack.
@@ -277,22 +273,25 @@ def push_slack(message):
 def lambda_handler(event, context):
     # date information for searching daily logs in cloud trail service
     SEARCH_DATE = datetime.now(timezone.utc) + timedelta(days=-1, hours=9)
-
-    # searched region
-    ec2 = boto3.client('ec2')
+    header = f"*Daily Instances Usage Report (DATE: {SEARCH_DATE.strftime('%Y-%m-%d')})*"
+    message = ""
 
     # created region list and called main function
+    ec2 = boto3.client('ec2')
     regions = [ region['RegionName'] for region in ec2.describe_regions()['Regions']]
-    all_daily_instance = daily_instance_usage(regions, SEARCH_DATE)
+    for region in regions:
+        all_daily_instance = daily_instance_usage(regions, SEARCH_DATE)
 
-    # created message to slack and pushed to slack
-    header, message = create_message(all_daily_instance, SEARCH_DATE)
+        # created message to slack and pushed to slack
+        if len(all_daily_instance) != 0:
+            usage_message,instance_count = create_message(all_daily_instance, SEARCH_DATE)
+            message += f"{region} ({instance_count}\n)"
+            message += usage_message
+
     push_slack(header)
-
-    # exception because of empty start instances or stop instances
-    try:
+    if message != "":
         push_slack(message)
-    except Exception:
-        push_slack("Empty")
+    else:
+        push_slack("Instances not used.")
 
     return "perfect jobs. check the slack message, plz."
