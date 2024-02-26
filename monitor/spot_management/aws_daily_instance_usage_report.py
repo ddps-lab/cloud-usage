@@ -132,8 +132,9 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance, END_DATE)
                     search_start_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0)
                     start_time = all_daily_instance[instance_id]['state'][sequence].get('StartTime')
                     if search_start_time == start_time and len(all_daily_instance[instance_id]['state']) == 1:
-                        del all_daily_instance[instance_id]
-                        add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE)
+                        if all_daily_instance[instance_id]['state'][sequence].get('StopTime') > event_time:
+                            del all_daily_instance[instance_id]
+                            add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, END_DATE)
                         continue
 
                     if start_time < event_time:
