@@ -281,12 +281,12 @@ def lambda_handler(event, context):
     ec2 = boto3.client('ec2')
     regions = [ region['RegionName'] for region in ec2.describe_regions()['Regions']]
     for region in regions:
-        all_daily_instance = daily_instance_usage(regions, SEARCH_DATE)
+        all_daily_instance = daily_instance_usage(region, SEARCH_DATE)
 
         # created message to slack and pushed to slack
         if len(all_daily_instance) != 0:
             usage_message,instance_count = create_message(all_daily_instance, SEARCH_DATE)
-            message += f"{region} ({instance_count}\n)"
+            message += f"{region} ({instance_count})\n"
             message += usage_message
 
     push_slack(header)
