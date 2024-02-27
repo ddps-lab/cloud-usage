@@ -233,18 +233,18 @@ def create_message(all_daily_instance, search_date):
                 try:
                     run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - all_daily_instance[instance_id]['state'][sequence]['StartTime']
 
+                    if run_time.days == -1:
+                        run_time = (-run_time)
+
+                    # create the message about instance usage
+                    message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / {run_time} 간 실행 / "
+
                 # when time information about start or stop not be in all daily instance
                 except KeyError:
                     if sequence == len(all_daily_instance[instance_id]['state']) - 1:
-                        run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
+                        message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / 인스턴스 실행 중 / "
                     else:
                         continue
-
-                if run_time.days == -1:
-                    run_time = (-run_time)
-
-                # create the message about instance usage
-                message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / {run_time} 간 실행 / "
 
                 # add emoji depending on whether spot instance is enabled
                 if all_daily_instance[instance_id]['Spot'] == True:
