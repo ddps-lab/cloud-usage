@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from slack_msg_sender import send_slack_message
 
 
-SLACK_URL = os.environ['SLACK_DDPS']
+SLACK_URL = os.environ['SLACK_TEST']
 
 
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
@@ -94,6 +94,13 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
 
         if instance_ids == None:
             continue
+        elif isinstance(instance_ids, float):
+            if 'SpotRquests' not in all_daily_instance:
+                all_daily_instance['SpotRquests'] = {'Number': instance_ids}
+            else:
+                all_daily_instance['SpotRquests'] += instance_ids
+            all_daily_instance = get_run_instance_information(events, 'SpotRquests', all_daily_instance)
+            continue
 
         for instance_id in instance_ids:
             # store new instance information
@@ -169,6 +176,10 @@ def get_instance_ids(events):
             return None, 0
     
     else:
+        if event_informations['responseElements'].get('omitted'):
+            instance_numbers = event_informations['requestParameters']['instancesSet'].get('items')
+            instance_numbers = (instance_numbers[0]['minCount'] + instance_numbers[0]['maxCount']) / 2.0
+            return instance_numbers, 0
         instances = event_informations['responseElements']['instancesSet']['items']
         for n in range(len(instances)):
             instance_ids.append(instances[n]['instanceId'])
@@ -222,44 +233,79 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
 
 
 # create_message() : Create a message to send to Slack.
-def create_message(all_daily_instance, search_date):
-    message = ""
+def create_message(region, all_daily_instance, search_date):
+    message = {'spot': ["",],  'request': "", 'on_demand': ["",]}
     count = 0
     try:
         for instance_id in all_daily_instance:
+            if instance_id == 'SpotRquests':
+                message['request'] += f"{' ':>12}이외 스팟리퀘스트 요청이 평균 {all_daily_instance['SpotRquests']['Number']}건 실행되었습니다.\n"
+                continue
+        
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
-                
                 # when time information about start and stop be in all daily instance
                 try:
                     run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - all_daily_instance[instance_id]['state'][sequence]['StartTime']
-
-                    if run_time.days == -1:
-                        run_time = (-run_time)
-
-                    # create the message about instance usage
-                    message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / {run_time} 간 실행 / "
+                    state_running = False
 
                 # when time information about start or stop not be in all daily instance
                 except KeyError:
                     if sequence == len(all_daily_instance[instance_id]['state']) - 1:
-                        message += f"        {all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / 인스턴스 실행 중 / "
+                        run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
+                        state_running = True
                     else:
                         continue
 
-                # add emoji depending on whether spot instance is enabled
-                if all_daily_instance[instance_id]['Spot'] == True:
-                    message += "Spot :large_blue_diamond:\n"
+                if run_time.days == -1:
+                    run_time = (-run_time)
+
+                # create the message about instance usage
+                usage_message = f"{' ':>8}{all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / "
+
+                if state_running:
+                    usage_message += f"인스턴스 실행 중 ({run_time})\n"
                 else:
-                    message += "On-demand :large_orange_diamond:\n"
+                    usage_message += f"{run_time} 간 실행\n"
+
+                # add message depending on whether spot instance is enabled
+                if all_daily_instance[instance_id]['Spot'] == True:
+                    if len(message['spot'][len(message['spot'])-1]) < 3950:
+                        message['spot'][len(message['spot'])-1] += usage_message
+                    else:
+                        message['spot'].append(usage_message)
+                else:
+                    if len(message['on_demand'][len(message['on_demand'])-1]) < 3950:
+                        message['on_demand'][len(message['on_demand'])-1] += usage_message
+                    else:
+                        message['on_demand'].append(usage_message)
                 count += 1
 
     except KeyError:
         send_slack_message("create_message() : A problem collecting instance information. Related functions is get_run_instance_information()")
     except Exception as e:
         send_slack_message(f"create_message() : Exception in relation to {e}")
+    
+    report_message = [f'{region} ({count})\n']
+    for kind in message:
+        if kind == 'request':
+            report_message[len(report_message)-1] += message[kind]
+            continue
+        if kind == 'spot':
+            emoji = ":large_blue_diamond:"
+        else:
+            emoji = ":large_orange_diamond:"
+        for sequence in range(len(message[kind])):
+            if message[kind][sequence] != "":
+                if sequence == 0:
+                    report_message[len(report_message)-1] += f"{' ':>8}{kind} {emoji}\n"
+                message_block = f"```{message[kind][sequence]}```"
+                if len(report_message[len(report_message)-1]) + len(message_block) < 4000:
+                    report_message[len(report_message)-1] += message_block
+                else:
+                    report_message.append(message_block)
 
-    return message, count
-
+    return report_message
+    
 
 # push_slack() : Push a message to Slack.
 def push_slack(message):
@@ -275,23 +321,23 @@ def lambda_handler(event, context):
     # date information for searching daily logs in cloud trail service
     SEARCH_DATE = datetime.now(timezone.utc) + timedelta(days=-1, hours=9)
     header = f"*Daily Instances Usage Report (DATE: {SEARCH_DATE.strftime('%Y-%m-%d')})*"
-    message = ""
+    all_message = []
 
     # created region list and called main function
     ec2 = boto3.client('ec2')
-    regions = [ region['RegionName'] for region in ec2.describe_regions()['Regions']]
+    regions = [region['RegionName'] for region in ec2.describe_regions()['Regions']]
     for region in regions:
         all_daily_instance = daily_instance_usage(region, SEARCH_DATE)
 
         # created message to slack and pushed to slack
         if len(all_daily_instance) != 0:
-            usage_message,instance_count = create_message(all_daily_instance, SEARCH_DATE)
-            message += f"{region} ({instance_count})\n"
-            message += usage_message
+            all_message.append(create_message(region, all_daily_instance, SEARCH_DATE))
 
     push_slack(header)
-    if message != "":
-        push_slack(message)
+    if len(all_message) != 0:
+        for region_message in all_message:
+            for message in region_message:
+                push_slack(message)
     else:
         push_slack("Instances not used.")
 
