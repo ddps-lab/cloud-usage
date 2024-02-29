@@ -98,7 +98,7 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
             if 'SpotRquests' not in all_daily_instance:
                 all_daily_instance['SpotRquests'] = {'Number': instance_ids}
             else:
-                all_daily_instance['SpotRquests'] += instance_ids
+                all_daily_instance['SpotRquests']['Number'] += instance_ids
             all_daily_instance = get_run_instance_information(events, 'SpotRquests', all_daily_instance)
             continue
 
