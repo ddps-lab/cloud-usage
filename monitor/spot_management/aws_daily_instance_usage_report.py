@@ -239,7 +239,7 @@ def create_message(region, all_daily_instance, search_date):
     try:
         for instance_id in all_daily_instance:
             if instance_id == 'SpotRquests':
-                message['request'] += f"{' ':>12}이외 스팟리퀘스트 요청이 평균 {all_daily_instance['SpotRquests']['Number']}건 실행되었습니다.\n"
+                message['request'] += f"{' ':>12}이외 스팟리퀘스트 요청이 약 {all_daily_instance['SpotRquests']['Number']}건 실행되었습니다.\n"
                 continue
         
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
