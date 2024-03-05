@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from slack_msg_sender import send_slack_message
 
 
-SLACK_URL = os.environ['SLACK_TEST']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
@@ -229,6 +229,25 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
     return daily_instances
 
 
+# get_spot_requests_information() : Find the stop time recorded on spot request
+def get_spot_requests_information(region, instance_id, search_date):
+    try:
+        cloudtrail = boto3.client('cloudtrail', region_name=region)
+        token, response = search_instances(cloudtrail, 'Username', instance_id, False, search_date + timedelta(days=-1), search_date, None)
+        for events in response['Events']:
+            if events.get('EventName') == 'DescribeSpotInstanceRequests':
+                event_informations = json.loads(events.get('CloudTrailEvent'))
+                request_id = event_informations['requestParameters']['spotInstanceRequestIdSet']['items'][0].get('spotInstanceRequestId')
+        token, response = search_instances(cloudtrail, 'ResourceName', request_id, False, search_date + timedelta(days=-1), search_date, None)
+        if response['Events'][0]['EventName'] == 'RequestSpotInstances':
+            event_informations = json.loads(response['Events'][0].get('CloudTrailEvent'))
+            valid_until = event_informations['requestParameters'].get('validUntil')
+            stop_time = (datetime.utcfromtimestamp(valid_until/1000) + timedelta(hours=9)).replace(microsecond=0)
+        return stop_time
+    except:
+        return None
+    
+
 # create_message() : Create a message to send to Slack.
 def create_message(region, all_daily_instance, search_date):
     message = {'spot': ["",],  'request': "", 'on_demand': ["",]}
@@ -240,16 +259,20 @@ def create_message(region, all_daily_instance, search_date):
                 continue
         
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
+                state_running = False
                 # when time information about start and stop be in all daily instance
                 try:
                     run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - all_daily_instance[instance_id]['state'][sequence]['StartTime']
-                    state_running = False
 
                 # when time information about start or stop not be in all daily instance
                 except KeyError:
                     if sequence == len(all_daily_instance[instance_id]['state']) - 1:
-                        run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
-                        state_running = True
+                        stop_time = get_spot_requests_information(region, instance_id, search_date)
+                        if stop_time != None:
+                            run_time = stop_time - all_daily_instance[instance_id]['state'][sequence]['StartTime']
+                        else:
+                            run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
+                            state_running = True
                     else:
                         continue
 
