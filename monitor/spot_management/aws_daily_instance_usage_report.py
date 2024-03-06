@@ -260,6 +260,7 @@ def create_message(region, all_daily_instance, search_date):
         
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
                 state_running = False
+                
                 # when time information about start and stop be in all daily instance
                 try:
                     run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - all_daily_instance[instance_id]['state'][sequence]['StartTime']
