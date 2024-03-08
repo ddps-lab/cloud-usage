@@ -1,3 +1,30 @@
+# 기능
+1. 현 계정의 모든 활성된 리전의 정보를 수집하고, 리스트로 만든다.
+2. 활성화된 모든 리전을 리스트를 차례로 돌아 인스턴스 사용량을 수집한다.
+3. 인스턴스의 정보를 이벤트 모드에 맞추어 수집하고, Dictionary로 저장한다.
+4. Dictionary 정보를 토대로 인스턴스 사용량 메세지를 생성한다.
+5. 활성화된 리전의 수만큼 3번과 4번을 반복한다.
+6. 생성된 메세지를 토대로 슬랙에 전달한다.
+
+
+## 설정해야 하는 관련 리소스
+### Lambda (필수)
+- 환경변수 : 메세지 전송 URL
+- TimeOut : 15min *권장
+
+### IAM Roles (필수)
+- AmazonEC2ReadOnlyAccess
+- AWSCloudTrail_ReadOnlyAccess
+- AWSLambdaBasicExecutionRole
+
+### event bridge (선택)
+- 매일 아침 8시 40분에 동작하게 이벤트 스케줄 생성
+
+### requests 모듈 (선택)
+- slack_msg_sender 파일의 함수를 사용하기 위해 필요한 필수 모듈
+- 사용 시 람다 레이어로 파이썬 버전에 맞게 설치 필요
+
+
 # aws_daily_instance_usage_report.py
 ## values
 - 사전에 람다 서비스 환경변수에 저장해둔 URL을 코드에서 사용하기 위해 선언한다.
@@ -100,6 +127,13 @@
 - run instance event에서만 알 수 있는 정보가 저장되며, 인스턴스 유형(ex. t2.micro), 스팟 인스턴스 여부 및 네임 태그 정보를 수집할 수 있다.
 
 
+## def get_spot_requests_information(region, instance_id, search_date):
+    : Find the stop time recorded on spot request.
+- 스팟 리퀘스트 요청 시 캔슬 시간을 지정한 경우 Terminate event 가 기록되지 않는다.
+- 이를 찾기 위해 스팟 리퀘스트 요청에 포함된 캔슬 시간 정보를 검색해 온다.
+- 모든 과정에서 캔슬 시간을 찾지 못한 경우 캔슬 시간이 정의되어 있지 않은 것으로 판단되며, 값을 찾지 않는다.
+
+
 ## def create_message(all_daily_instance, search_date):
     : Create a message to send to Slack.
 - 슬랙에 보낼 메세지를 생성한다.
@@ -136,12 +170,3 @@
 - 각 리전 별로 인스턴스 사용량을 받아오고, 슬랙에 만들 메세지로 생성한다.
 - 실행한 인스턴스가 한 개 이상 존재하면 슬랙으로 메세지를 보낸다.
 - 실행한 인스턴스가 한 개도 없을 시 인스턴스를 사용하지 않았다는 메세지를 보낸다.
-
-
-# 기능
-1. 현 계정의 모든 활성된 리전의 정보를 수집하고, 리스트로 만든다.
-2. 활성화된 모든 리전을 리스트를 차례로 돌아 인스턴스 사용량을 수집한다.
-3. 인스턴스의 정보를 이벤트 모드에 맞추어 수집하고, Dictionary로 저장한다.
-4. Dictionary 정보를 토대로 인스턴스 사용량 메세지를 생성한다.
-5. 활성화된 리전의 수만큼 3번과 4번을 반복한다.
-6. 생성된 메세지를 토대로 슬랙에 전달한다.
