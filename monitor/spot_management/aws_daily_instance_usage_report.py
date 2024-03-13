@@ -376,6 +376,8 @@ def lambda_handler(event, context):
         for region_message in all_message:
             for message in region_message:
                 push_slack(message)
+        if spot_message[0]:
+            push_slack(spot_message[1])
     else:
         push_slack("Instances not used.")
 
