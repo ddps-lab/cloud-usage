@@ -215,6 +215,9 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
     daily_instances[run_instance_id]['InstanceType'] = event_informations['requestParameters'].get('instanceType')
     daily_instances[run_instance_id]['UserName'] = events.get('Username')
 
+    if event_informations['requestParameters'].get('instancesSet') != None:
+        daily_instances[run_instance_id]['KeyName'] = event_informations['requestParameters']['instancesSet']['items'][0].get('keyName')
+
     if event_informations['requestParameters'].get('instanceMarketOptions') != None:
         daily_instances[run_instance_id]['Spot'] = True
     else:
@@ -242,7 +245,7 @@ def get_spot_requests_information(region, instance_id, search_date):
         if response['Events'][0]['EventName'] == 'RequestSpotInstances':
             event_informations = json.loads(response['Events'][0].get('CloudTrailEvent'))
             valid_until = event_informations['requestParameters'].get('validUntil')
-            stop_time = (datetime.utcfromtimestamp(valid_until/1000) + timedelta(hours=9)).replace(microsecond=0)
+            stop_time = (datetime.utcfromtimestamp(valid_until/1000)).replace(microsecond=0)
         return stop_time
     except:
         return None
@@ -251,7 +254,8 @@ def get_spot_requests_information(region, instance_id, search_date):
 # create_message() : Create a message to send to Slack.
 def create_message(region, all_daily_instance, search_date):
     message = {'spot': ["",],  'request': "", 'on_demand': ["",]}
-    count = 0
+    instance_count = 0
+    experiment_count = 0
     try:
         for instance_id in all_daily_instance:
             if instance_id == 'SpotRquests':
@@ -273,12 +277,20 @@ def create_message(region, all_daily_instance, search_date):
                             run_time = stop_time - all_daily_instance[instance_id]['state'][sequence]['StartTime']
                         else:
                             run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
-                            state_running = True
+                            if all_daily_instance[instance_id]['UserName'] == "InstanceLaunch" and all_daily_instance[instance_id]['KeyName' == None]:
+                                run_time = timedelta(days=0, seconds=0)
+                            else:
+                                state_running = True
                     else:
                         continue
 
                 if run_time.days == -1:
                     run_time = (-run_time)
+
+                if run_time.seconds < 3:
+                    instance_count += 1
+                    experiment_count += 1
+                    continue
 
                 # create the message about instance usage
                 usage_message = f"{' ':>8}{all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / "
@@ -324,6 +336,8 @@ def create_message(region, all_daily_instance, search_date):
                     report_message[len(report_message)-1] += message_block
                 else:
                     report_message.append(message_block)
+    if experiment_count > 0:
+        report_message[len(report_message)-1] += f"{' ':4}실험을 위한 {experiment_count}개의 인스턴스가 3초 이내로 실행되었습니다.\n"
 
     return report_message
     
@@ -340,25 +354,33 @@ def push_slack(message):
 
 def lambda_handler(event, context):
     # date information for searching daily logs in cloud trail service
+    record_time = datetime.now(timezone.utc) + timedelta(hours=9)
     search_date = datetime.now(timezone.utc) + timedelta(days=-1, hours=9)
     header = f"*Daily Instances Usage Report (DATE: {search_date.strftime('%Y-%m-%d')})*"
     all_message = []
+    stop_message = [False, "*생성된 인스턴스의 수가 많아 인스턴스 사용량 전달을 중단합니다.*"]
 
     # created region list and called main function
     ec2 = boto3.client('ec2')
     regions = [region['RegionName'] for region in ec2.describe_regions()['Regions']]
     for region in regions:
+        if ((datetime.now(timezone.utc) + timedelta(hours=9)) - record_time).seconds > 270:
+            stop_message[0] = True
+            break
+        
         all_daily_instance = daily_instance_usage(region, search_date)
 
         # created message to slack and pushed to slack
         if len(all_daily_instance) != 0:
             all_message.append(create_message(region, all_daily_instance, search_date))
-
+        
     push_slack(header)
     if len(all_message) != 0:
         for region_message in all_message:
             for message in region_message:
                 push_slack(message)
+        if stop_message[0]:
+            push_slack(stop_message[1])
     else:
         push_slack("Instances not used.")
 
