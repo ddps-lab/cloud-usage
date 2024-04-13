@@ -225,9 +225,16 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
 
     try:
         name_tag = event_informations['requestParameters']['tagSpecificationSet']['items'][0]['tags'][0]['value']
+        if name_tag[:4] == "sfr-":
+            name_tag = "spot fleet"
         daily_instances[run_instance_id]['NameTag'] = name_tag
+        if len(daily_instances[run_instance_id].get('UserName')) > 10:
+            for resource in events.get('Resources'):
+                if resource.get('ResourceType') == 'AWS::EC2::KeyPair':
+                    daily_instances[run_instance_id]['UserName'] = resource.get('ResourceName')
     except Exception:
         daily_instances[run_instance_id]['NameTag'] = daily_instances[run_instance_id]['UserName']
+        daily_instances[run_instance_id]['UserName'] = "aws"
 
     return daily_instances
 
@@ -293,7 +300,7 @@ def create_message(region, all_daily_instance, search_date):
                     continue
 
                 # create the message about instance usage
-                usage_message = f"{' ':>8}{all_daily_instance[instance_id]['NameTag']} ({instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / "
+                usage_message = f"{' ':>8}{all_daily_instance[instance_id]['NameTag']} ({all_daily_instance[instance_id]['UserName']}, {instance_id}) / {all_daily_instance[instance_id]['InstanceType']} / "
 
                 if state_running:
                     usage_message += f"인스턴스 실행 중 ({run_time})\n"
