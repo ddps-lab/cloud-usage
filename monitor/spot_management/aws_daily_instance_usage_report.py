@@ -39,7 +39,7 @@ def daily_instance_usage(region, end_date):
                     all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance, end_date)
                 else:
                     all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance, end_date)
-                
+                         
     except KeyError as keyerror:
         send_slack_message(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
     except Exception as e:
@@ -143,7 +143,7 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance, end_date)
                             add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time, end_date)
                         continue
 
-                    if start_time < event_time:
+                    if start_time <= event_time:
                         all_daily_instance[instance_id]['state'][sequence]['StopTime'] = event_time
                     else:
                         previous_start_time = all_daily_instance[instance_id]['state'][sequence-1].get('StartTime')
@@ -271,7 +271,6 @@ def create_message(region, all_daily_instance, search_date):
         
             for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
                 state_running = False
-                
                 # when time information about start and stop be in all daily instance
                 try:
                     run_time = all_daily_instance[instance_id]['state'][sequence]['StopTime'] - all_daily_instance[instance_id]['state'][sequence]['StartTime']
@@ -284,7 +283,7 @@ def create_message(region, all_daily_instance, search_date):
                             run_time = stop_time - all_daily_instance[instance_id]['state'][sequence]['StartTime']
                         else:
                             run_time = datetime(int(search_date.strftime("%Y")), int(search_date.strftime("%m")), int(search_date.strftime("%d")), 15, 0, 0) - all_daily_instance[instance_id]['state'][sequence]['StartTime']
-                            if all_daily_instance[instance_id]['UserName'] == "InstanceLaunch" and all_daily_instance[instance_id]['KeyName' == None]:
+                            if all_daily_instance[instance_id]['UserName'] == "InstanceLaunch" and all_daily_instance[instance_id]['KeyName'] == None:
                                 run_time = timedelta(days=0, seconds=0)
                             else:
                                 state_running = True
@@ -318,14 +317,14 @@ def create_message(region, all_daily_instance, search_date):
                         message['on_demand'][len(message['on_demand'])-1] += usage_message
                     else:
                         message['on_demand'].append(usage_message)
-                count += 1
+                instance_count += 1
 
     except KeyError:
         send_slack_message("create_message() : A problem collecting instance information. Related functions is get_run_instance_information()")
     except Exception as e:
         send_slack_message(f"create_message() : Exception in relation to {e}")
     
-    report_message = [f'{region} ({count})\n']
+    report_message = [f'{region} ({instance_count})\n']
     for kind in message:
         if kind == 'request':
             report_message[len(report_message)-1] += message[kind]
@@ -374,13 +373,13 @@ def lambda_handler(event, context):
         if ((datetime.now(timezone.utc) + timedelta(hours=9)) - record_time).seconds > 270:
             stop_message[0] = True
             break
-        
+            
         all_daily_instance = daily_instance_usage(region, search_date)
 
         # created message to slack and pushed to slack
         if len(all_daily_instance) != 0:
             all_message.append(create_message(region, all_daily_instance, search_date))
-        
+         
     push_slack(header)
     if len(all_message) != 0:
         for region_message in all_message:
