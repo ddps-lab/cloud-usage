@@ -102,10 +102,10 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance, END_DATE
                     all_daily_instance['SpotRquests']['Number'] += request_number
             continue
 
-        for instance_id in instance_ids:
+        for instance_id, spot_request_id in instance_ids:
             # store new instance information
             if instance_id not in all_daily_instance:
-                all_daily_instance[instance_id] = {'state': [{'StartTime': event_time}]}
+                all_daily_instance[instance_id] = {'state': [{'StartTime': event_time}], 'spot_request_id': spot_request_id}
                 if mode == "RunInstances":
                     all_daily_instance = get_run_instance_information(events, instance_id, all_daily_instance)
                 else:
@@ -130,7 +130,7 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance, end_date)
         if instance_ids == None:
             continue
 
-        for instance_id in instance_ids:
+        for instance_id, _ in instance_ids:
             # add the stop time information of instance to daily instance list
             if instance_id in all_daily_instance:
                 for sequence in range(0, len(all_daily_instance[instance_id]['state'])):
@@ -179,7 +179,7 @@ def get_instance_ids(events):
             return None, 0
         instances = event_informations['responseElements']['instancesSet']['items']
         for n in range(len(instances)):
-            instance_ids.append(instances[n]['instanceId'])
+            instance_ids.append((instances[n]['instanceId'], instances[n].get('spotInstanceRequestId')))
             
     event_time = events['EventTime'].replace(tzinfo=None)
 
@@ -240,19 +240,20 @@ def get_run_instance_information(events, run_instance_id, daily_instances):
 
 
 # get_spot_requests_information() : Find the stop time recorded on spot request
-def get_spot_requests_information(region, instance_id, search_date):
+def get_spot_requests_information(region, instance_id, search_date, request_id):
     try:
         cloudtrail = boto3.client('cloudtrail', region_name=region)
-        token, response = search_instances(cloudtrail, 'Username', instance_id, False, search_date + timedelta(days=-1), search_date, None)
-        for events in response['Events']:
-            if events.get('EventName') == 'DescribeSpotInstanceRequests':
-                event_informations = json.loads(events.get('CloudTrailEvent'))
-                request_id = event_informations['requestParameters']['spotInstanceRequestIdSet']['items'][0].get('spotInstanceRequestId')
+        if request_id == None:
+            token, response = search_instances(cloudtrail, 'Username', instance_id, False, search_date + timedelta(days=-1), search_date, None)
+            for events in response['Events']:
+                if events.get('EventName') == 'DescribeSpotInstanceRequests':
+                    event_informations = json.loads(events.get('CloudTrailEvent'))
+                    request_id = event_informations['requestParameters']['spotInstanceRequestIdSet']['items'][0].get('spotInstanceRequestId')
         token, response = search_instances(cloudtrail, 'ResourceName', request_id, False, search_date + timedelta(days=-1), search_date, None)
         if response['Events'][0]['EventName'] == 'RequestSpotInstances':
             event_informations = json.loads(response['Events'][0].get('CloudTrailEvent'))
             valid_until = event_informations['requestParameters'].get('validUntil')
-            stop_time = (datetime.utcfromtimestamp(valid_until/1000)).replace(microsecond=0)
+            stop_time = (datetime.fromtimestamp(valid_until/1000)).replace(microsecond=0)
         return stop_time
     except:
         return None
@@ -278,7 +279,8 @@ def create_message(region, all_daily_instance, search_date):
                 # when time information about start or stop not be in all daily instance
                 except KeyError:
                     if sequence == len(all_daily_instance[instance_id]['state']) - 1:
-                        stop_time = get_spot_requests_information(region, instance_id, search_date)
+                        spot_request_id = all_daily_instance[instance_id].get('spot_request_id')
+                        stop_time = get_spot_requests_information(region, instance_id, search_date, spot_request_id)
                         if stop_time != None:
                             run_time = stop_time - all_daily_instance[instance_id]['state'][sequence]['StartTime']
                         else:
