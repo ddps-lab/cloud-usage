@@ -119,7 +119,7 @@ def created_message(head_message, running_list, stopped_list, volume_list):
         if len(stopped_list) > 0:
             message += (f"\n[Stopped EC2 Instances] ({len(stopped_list)})\n")
             for stopped_instance in stopped_list:
-                meg = (f"{stopped_instance['region']} / {stopped_instance['info']}({stopped_instance['key_name']}) / {stopped_instance['type']} / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
+                meg = (f"{stopped_instance['region']} / {stopped_instance['info']}({stopped_instance['type']}) / {stopped_instance['key_name']} / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
                 if stopped_instance['time_days'] < 7:
                     message += (meg+" 정지 중 :white_circle:\n")
                 elif stopped_instance['time_days'] < 13:
