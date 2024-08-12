@@ -1,7 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json, configparser
-from datetime import datetime,  timedelta
+from datetime import datetime,  timedelta, timezone
 
 
 # auto_archiving - 아카이브할 버킷 탐색 및 아카이브 진행
@@ -68,7 +68,7 @@ def created_message(now_time, archiving_list, error_list):
                 size = round(bucket[1]/1000000, 2)
                 message += f"\n{count}.  {bucket[0]}    {size}MB"
             else:
-                message += f"\n{count}.  {bucket[0]}    {size}"
+                message += f"\n{count}.  {bucket[0]}    {bucket[1]}"
             count += 1
     else:
         message += "\nGlacier로 옮길 항목이 없습니다.\n"
@@ -101,7 +101,7 @@ if __name__ == '__main__':
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
     SLACK_URL = config.get('s3_setting', 'SLACK_URL')
 
-    utc_time = datetime.utcnow()
+    utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
     archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS)

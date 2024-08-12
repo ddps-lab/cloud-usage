@@ -1,7 +1,7 @@
 import boto3, os
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 SLACK_URL = os.environ['SLACK_URL']
 
@@ -87,7 +87,7 @@ def slack_message(message, meg_type):
 # lambda_handler : 람다 실행
 def lambda_handler(event, context):
 
-    utc_time = datetime.utcnow()
+    utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
     bucket_standard_list, bucket_name_max = get_s3_bucket()
