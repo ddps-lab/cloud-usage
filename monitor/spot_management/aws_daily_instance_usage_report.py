@@ -170,7 +170,7 @@ def get_instance_ids(events):
         try:
             for resource in events['Resources']:
                 if resource['ResourceType'] == 'AWS::EC2::Instance':
-                    instance_ids.append(resource['ResourceName'])
+                    instance_ids.append((resource['ResourceName']), None)
         except KeyError:
             return None, 0
     
