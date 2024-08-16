@@ -35,7 +35,6 @@ def get_instance_items(current_time, regions):
             # 한 리전의 인스턴스 정보 추출
             for reservation in instances['Reservations']:
                 for instance in reservation['Instances']:
-                    key_name = instance['KeyName']
                     # 인스턴스 탐색
                     try:
                         for tag in instance['Tags']:
@@ -61,7 +60,7 @@ def get_instance_items(current_time, regions):
                         volume_id = mapping['Ebs']['VolumeId']
 
                     # 인스턴스 저장
-                    instance_dsc = {'region':ec2_region, 'key_name':key_name, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
+                    instance_dsc = {'region':ec2_region, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
                     if instance_state == 'running':
                         running_instances.append(instance_dsc)
                     else:
@@ -110,7 +109,7 @@ def created_message(head_message, running_list, stopped_list, volume_list):
         if len(running_list) > 0:
             message += (f"\n[Running EC2 Instances] ({len(running_list)})\n")
             for running_instance in running_list:
-                meg = (f"{running_instance['region']} / {running_instance['info']}({running_instance['type']}) / {running_instance['key_name']} / {running_instance['volume']} ~ {running_instance['time_days']}일 {running_instance['time_hours']}시간 {running_instance['time_minutes']}분간")
+                meg = (f"{running_instance['region']} / {running_instance['info']}({running_instance['type']}) / {running_instance['volume']} ~ {running_instance['time_days']}일 {running_instance['time_hours']}시간 {running_instance['time_minutes']}분간")
                 if running_instance['time_days'] == 0 or running_instance['time_days'] > 3:
                     message += (meg+" 실행 중 :large_green_circle:\n")
                 else:
@@ -119,7 +118,7 @@ def created_message(head_message, running_list, stopped_list, volume_list):
         if len(stopped_list) > 0:
             message += (f"\n[Stopped EC2 Instances] ({len(stopped_list)})\n")
             for stopped_instance in stopped_list:
-                meg = (f"{stopped_instance['region']} / {stopped_instance['info']}({stopped_instance['type']}) / {stopped_instance['key_name']} / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
+                meg = (f"{stopped_instance['region']} / {stopped_instance['info']}({stopped_instance['type']}) / {stopped_instance['volume']} ~ {stopped_instance['time_days']}일 {stopped_instance['time_hours']}시간 {stopped_instance['time_minutes']}분간")
                 if stopped_instance['time_days'] < 7:
                     message += (meg+" 정지 중 :white_circle:\n")
                 elif stopped_instance['time_days'] < 13:
