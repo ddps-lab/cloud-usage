@@ -50,7 +50,6 @@ def get_archiving_bucket(pass_list):
                 for content in bucket_objects['Contents']:
                     if content['StorageClass'] == "STANDARD":
                         bucket_size += content['Size']
-            bucket_size = round(bucket_size/(1000000), 2) # MB 단위
 
         if archiving_bucket and last_accessed_date != "N/A":
             archiving_list.append([bucket_name, bucket_size, last_accessed_date]) 
@@ -72,10 +71,14 @@ def created_message(now_time, archiving_list, bucket_name_max):
         message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12} {"Last Modified"}'
         count = 1
         for item in archiving_list:
-            if item[1] >= 1000:
-                item[1] = str(round(item[1]/1000, 2)) + " GB"
+            if item[1] >= 1000000000:
+                item[1] = str(round(item[1]/1000000000, 2)) + " GB"
+            elif item[1] >= 1000000:
+                item[1] = str(round(item[1]/1000000, 2)) + " MB"
+            elif item[1] >= 1000:
+                item[1] = str(round(item[1]/1000, 2)) + " KB"
             else:
-                item[1] = str(item[1]) + " MB"
+                item[1] = str(item[1]) + " B"
             message += f'\n{count:>2}. {item[0]:{bucket_name_max+2}} {item[1]:12} {item[2]}'
             count += 1
             if len(message) > 3800:
