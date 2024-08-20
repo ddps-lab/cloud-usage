@@ -3,7 +3,7 @@ from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
 from datetime import datetime, timedelta, timezone
 
-SLACK_DDPS = os.environ['SLACK_DDPS']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 
 # get s3 bucket : s3 버킷 중 standard class 만 리스트 생성
@@ -82,7 +82,7 @@ def slack_message(message, meg_type):
         payload = {"text": f'```{message}```'}
     data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(SLACK_DDPS)
+    req = urllib.request.Request(SLACK_URL)
     req.add_header("Content-Type", "application/json")
     return urllib.request.urlopen(req, data)
 

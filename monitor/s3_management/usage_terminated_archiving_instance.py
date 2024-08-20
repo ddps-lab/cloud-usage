@@ -2,7 +2,7 @@ import boto3
 import urllib.request, json, os
 
 
-SLACK_DDPS = os.environ['SLACK_DDPS']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 # slack message : 생성한 메세지를 슬랙으로 전달
 def slack_message(message, meg_type, url):
@@ -18,7 +18,7 @@ def slack_message(message, meg_type, url):
 
 # lambda handler : 람다 실행
 def lambda_handler(event, context):
-    url = SLACK_DDPS
+    url = SLACK_URL
     region = os.environ['RUN_REGION']
     
     meg = ""

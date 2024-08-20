@@ -105,7 +105,7 @@ if __name__ == '__main__':
     config.read('/home/ubuntu/config.ini')
     
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
-    SLACK_DDPS = config.get('s3_setting', 'SLACK_DDPS')
+    SLACK_URL = config.get('s3_setting', 'SLACK_URL')
     pass_list = config.get('s3_setting', 'PASS_LIST')
 
     utc_time = datetime.now(timezone.utc)
@@ -113,4 +113,4 @@ if __name__ == '__main__':
 
     archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS, pass_list)
     message = created_message(korea_time, archiving_list, error_list)
-    response = slack_message(message, SLACK_DDPS)
+    response = slack_message(message, SLACK_URL)

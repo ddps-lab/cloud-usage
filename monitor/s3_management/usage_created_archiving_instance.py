@@ -34,14 +34,14 @@ def usage(user_data):
 
 def created_userdata():
     DEADLINE_MONTHS = int(os.environ['DEADLINE_MONTHS'])
-    SLACK_DDPS = os.environ['SLACK_DDPS']
+    SLACK_URL = os.environ['SLACK_DDPS']
     PASS_LIST = [item.strip() for item in os.environ['PASS_LIST'].split(',')]
 
     data = f"""#!/bin/bash
 cat <<EOL > /home/ubuntu/config.ini
 [s3_setting]
 DEADLINE_MONTHS = {DEADLINE_MONTHS}
-SLACK_DDPS = {SLACK_DDPS}
+SLACK_URL = {SLACK_URL}
 PASS_LIST = {PASS_LIST}
 EOL
 /home/ubuntu/runfile.sh
