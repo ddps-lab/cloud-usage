@@ -41,7 +41,7 @@ def created_userdata():
 cat <<EOL > /home/ubuntu/config.ini
 [s3_setting]
 DEADLINE_MONTHS = {DEADLINE_MONTHS}
-SLACK_URL = {SLACK_DDPS}
+SLACK_DDPS = {SLACK_DDPS}
 PASS_LIST = {PASS_LIST}
 EOL
 /home/ubuntu/runfile.sh
