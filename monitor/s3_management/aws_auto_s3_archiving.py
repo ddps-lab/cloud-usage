@@ -5,7 +5,7 @@ from datetime import datetime,  timedelta, timezone
 
 
 # auto_archiving - 아카이브할 버킷 탐색 및 아카이브 진행
-def auto_archiving(session, DEADLINE_MONTHS):
+def auto_archiving(session, DEADLINE_MONTHS, pass_list):
     s3_client = session.client('s3')
     bucket_list = s3_client.list_buckets()
     buckets = bucket_list['Buckets']
@@ -16,6 +16,11 @@ def auto_archiving(session, DEADLINE_MONTHS):
 
     for bucket in buckets:
         bucket_name = bucket['Name']
+
+        # 아카이빙하지 않을 목록은 스킵함
+        if bucket_name in pass_list:
+            continue
+        
         standard_size = 0
         last_accessed_date = "N/A"
         archiving_bucket = True
@@ -39,6 +44,7 @@ def auto_archiving(session, DEADLINE_MONTHS):
                 for content in bucket_objects['Contents']:
                     if content['StorageClass'] == 'STANDARD':
                         standard_size += content['Size']
+                        # 아카이빙을 진행하는 코드 (.copy_object)
                         try:
                             s3_client.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': content['Key']}, Key=content['Key'], StorageClass='GLACIER')
                         except ClientError as e:
@@ -62,13 +68,13 @@ def created_message(now_time, archiving_list, error_list):
         message += f"\n{len(archiving_list)}개의 버킷을 Glacier로 옮겼습니다.\n"
         for bucket in archiving_list:
             if bucket[1] >= 1000000000:
-                size = round(bucket[1]/1000000000, 2)
-                message += f"\n{count}.  {bucket[0]}    {size}GB"
+                message += f"\n{count}.  {bucket[0]}    {round(bucket[1]/1000000000, 2)}GB"
             elif bucket[1] >= 1000000:
-                size = round(bucket[1]/1000000, 2)
-                message += f"\n{count}.  {bucket[0]}    {size}MB"
+                message += f"\n{count}.  {bucket[0]}    {round(bucket[1]/1000000, 2)}MB"
+            elif bucket[1] >= 1000:
+                message += f"\n{count}.  {bucket[0]}    {round(bucket[1]/1000, 2)}KB"
             else:
-                message += f"\n{count}.  {bucket[0]}    {bucket[1]}"
+                message += f"\n{count}.  {bucket[0]}    {bucket[1]}B"
             count += 1
     else:
         message += "\nGlacier로 옮길 항목이 없습니다.\n"
@@ -99,11 +105,12 @@ if __name__ == '__main__':
     config.read('/home/ubuntu/config.ini')
     
     DEADLINE_MONTHS = int(config.get('s3_setting', 'DEADLINE_MONTHS'))
-    SLACK_URL = config.get('s3_setting', 'SLACK_URL')
+    SLACK_DDPS = config.get('s3_setting', 'SLACK_DDPS')
+    pass_list = config.get('s3_setting', 'PASS_LIST')
 
     utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
-    archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS)
+    archiving_list, error_list = auto_archiving(session, DEADLINE_MONTHS, pass_list)
     message = created_message(korea_time, archiving_list, error_list)
-    response = slack_message(message, SLACK_URL)
+    response = slack_message(message, SLACK_DDPS)
