@@ -1,9 +1,9 @@
 import boto3, os
 from botocore.exceptions import ClientError
 import urllib.request, urllib.parse, json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-SLACK_URL = os.environ['SLACK_URL']
+SLACK_URL = os.environ['SLACK_DDPS']
 
 try:
     DEADLINE_MONTHS = int(os.environ['MONTHS'])
@@ -13,7 +13,7 @@ DEADLINE = datetime.now() - timedelta(days=DEADLINE_MONTHS*30)
 
 
 # get archiving bucket : 아카이브행 버킷 탐색
-def get_archiving_bucket():
+def get_archiving_bucket(pass_list):
     s3_client = boto3.client('s3')
     bucket_list = s3_client.list_buckets()
     archiving_list = []
@@ -21,6 +21,11 @@ def get_archiving_bucket():
     
     for bucket in bucket_list['Buckets']:
         bucket_name = bucket["Name"]
+        
+        # 아카이빙 목록에서 제외해야 하는 버킷이라면 패스함
+        if bucket_name in pass_list:
+            continue
+        
         bucket_name_len = len(bucket_name)
         bucket_name_max = max(bucket_name_max, bucket_name_len)
 
@@ -45,7 +50,6 @@ def get_archiving_bucket():
                 for content in bucket_objects['Contents']:
                     if content['StorageClass'] == "STANDARD":
                         bucket_size += content['Size']
-            bucket_size = round(bucket_size/(1000000), 2) # MB 단위
 
         if archiving_bucket and last_accessed_date != "N/A":
             archiving_list.append([bucket_name, bucket_size, last_accessed_date]) 
@@ -67,10 +71,14 @@ def created_message(now_time, archiving_list, bucket_name_max):
         message = f'{"No":>2}. {"Bucket Name":{bucket_name_max+2}} {"Size":12} {"Last Modified"}'
         count = 1
         for item in archiving_list:
-            if item[1] >= 1000:
-                item[1] = str(round(item[1]/1000, 2)) + " GB"
+            if item[1] >= 1000000000:
+                item[1] = str(round(item[1]/1000000000, 2)) + " GB"
+            elif item[1] >= 1000000:
+                item[1] = str(round(item[1]/1000000, 2)) + " MB"
+            elif item[1] >= 1000:
+                item[1] = str(round(item[1]/1000, 2)) + " KB"
             else:
-                item[1] = str(item[1]) + " MB"
+                item[1] = str(item[1]) + " B"
             message += f'\n{count:>2}. {item[0]:{bucket_name_max+2}} {item[1]:12} {item[2]}'
             count += 1
             if len(message) > 3800:
@@ -97,11 +105,13 @@ def slack_message(message, meg_type):
 
 # lambda handler : 람다 실행
 def lambda_handler(event, context):
-
-    utc_time = datetime.utcnow()
+    # 람다 환경변수로부터 패스해야 하는 버킷 리스트를 읽음
+    pass_list = [item.strip() for item in os.environ['PASS_LIST'].split(',')]
+    
+    utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
-    bucket_result_list, bucket_name_max = get_archiving_bucket()
+    bucket_result_list, bucket_name_max = get_archiving_bucket(pass_list)
     header, messages = created_message(korea_time, bucket_result_list, bucket_name_max)
     
     response = slack_message(header, True)

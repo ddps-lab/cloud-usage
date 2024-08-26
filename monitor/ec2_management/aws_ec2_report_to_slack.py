@@ -35,8 +35,9 @@ def get_instance_items(current_time, regions):
             # 한 리전의 인스턴스 정보 추출
             for reservation in instances['Reservations']:
                 for instance in reservation['Instances']:
-                    key_name = instance['KeyName']
                     # 인스턴스 탐색
+                    key_name = instance.get('KeyName')
+
                     try:
                         for tag in instance['Tags']:
                             if tag['Key'] == 'Name':
