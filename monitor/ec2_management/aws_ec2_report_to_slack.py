@@ -30,7 +30,7 @@ def get_instance_items(regions):
         # 리전에 존재하는 모든 인스턴스 탐색
         for ec2_region in regions:
             ec2_list = boto3.client('ec2', region_name=ec2_region)
-            instances = ec2_list.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running', 'stopped']}])['Reservations']
+            instances = ec2_list.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running', 'stopped']}]).get('Reservations')
 
             if not instances:
                 continue
