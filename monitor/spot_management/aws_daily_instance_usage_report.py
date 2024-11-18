@@ -18,8 +18,8 @@ def daily_instance_usage(region):
     check_mode = [True, True, False, False]
     
     # store cloud trail logs of all region
-    try:
-        for i, mode in enumerate(search_modes):
+    for i, mode in enumerate(search_modes):
+        try:
             cloudtrail = boto3.client('cloudtrail', region_name=region)
 
             response_list = []
@@ -32,7 +32,10 @@ def daily_instance_usage(region):
 
                 token, response = search_instances(cloudtrail, "EventName", mode, token, 0, token_code)
                 response_list.append(response)
-            
+        except:
+            send_slack_message(f'An exception that occurred while getting the result of cloud trail query response about {mode} events in {region}')
+
+        try:            
             # call the following functions according to the selected mode
             # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
             for response in response_list:
@@ -41,11 +44,8 @@ def daily_instance_usage(region):
                 else:
                     all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance)
 
-    except KeyError as keyerror:
-        send_slack_message(f'daily_instance_usage() : KeyError in relation to "{keyerror}" in "{region}"')
-    except Exception as e:
-        send_slack_message(f'daily_instance_usage() : Exception in relation to "{e}" in "{region}"')
-
+        except Exception as e:
+            send_slack_message(f'An Exception that occurred while collecting instance usage information in {region}\n Check the error message: {e}')
     return all_daily_instance
 
 
@@ -89,33 +89,46 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance):
     for events in response['Events']:
         instance_ids, event_time = get_instance_ids(events)
 
-        if instance_ids == None:
-            event_informations = json.loads(events['CloudTrailEvent'])
-            if event_informations['responseElements'].get('omitted'):
-                request_number = (event_informations['requestParameters']['instancesSet'].get('items'))[0]['maxCount']
-                if 'SpotRquests' not in all_daily_instance:
-                    all_daily_instance['SpotRquests'] = {'Number': request_number}
-                else:
-                    all_daily_instance['SpotRquests']['Number'] += request_number
-            continue
+        try:
+            if instance_ids == None:
+                event_informations = json.loads(events['CloudTrailEvent'])
+                if event_informations['responseElements'].get('omitted'):
+                    request_number = (event_informations['requestParameters']['instancesSet'].get('items'))[0]['maxCount']
+                    if 'SpotRquests' not in all_daily_instance:
+                        all_daily_instance['SpotRquests'] = {'Number': request_number}
+                    else:
+                        all_daily_instance['SpotRquests']['Number'] += request_number
+                continue
+        except:
+            send_slack_message(f'An exception that occurred in the process of determining how many spot request requests there were when there was no instance_id')
 
-        for instance_id, spot_request_id in instance_ids:
-            # store new instance information
-            if instance_id not in all_daily_instance:
-                all_daily_instance[instance_id] = {'state': [{'StartTime': event_time}], 'spot_request_id': spot_request_id}
-                if mode == "RunInstances":
-                    all_daily_instance = get_run_instance_information(events, instance_id, all_daily_instance)
-                else:
-                    all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance)
+        try:
+            for instance_id, spot_request_id in instance_ids:
+                # store new instance information
+                if instance_id not in all_daily_instance:
+                    try:
+                        all_daily_instance[instance_id] = {'state': [{'StartTime': event_time}], 'spot_request_id': spot_request_id}
+                        if mode == "RunInstances":
+                            all_daily_instance = get_run_instance_information(events, instance_id, all_daily_instance)
+                        else:
+                            all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance)
+                    except:
+                        send_slack_message(f'An exception that occurred in storing the new instance information of {instance_id} during the "get_start_instances()" function.')
 
-            # add the start time information of instance to daily instance list
-            else:
-                # Ignore RunInstances event duplication
-                if mode == "RunInstances":
-                    continue
-                sequence = len(all_daily_instance[instance_id]['state']) - 1
-                if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
-                    all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
+                # add the start time information of instance to daily instance list
+                else:
+                    # Ignore RunInstances event duplication
+                    if mode == "RunInstances":
+                        continue
+                    try:
+                        sequence = len(all_daily_instance[instance_id]['state']) - 1
+                        if event_time != all_daily_instance[instance_id]['state'][sequence]['StartTime']:
+                            all_daily_instance[instance_id]['state'].append({'StartTime': event_time})
+                    except:
+                        send_slack_message(f'An exception that occurred in storing the start instance event information of {instance_id}')
+        except ValueError as e:
+            send_slack_message(f'An exception that occurred in running "get_start_instances()" function.\nCheck the error message: {e}')
+
     return all_daily_instance
 
 
@@ -127,31 +140,40 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance):
         if instance_ids == None:
             continue
 
-        for instance_id, _ in instance_ids:
-            # add the stop time information of instance to daily instance list
-            if instance_id in all_daily_instance:
-                for sequence, instance_state in enumerate(all_daily_instance[instance_id]['state']):
-                    start_time = instance_state.get('StartTime')
-                    if start_datetime == start_time and len(all_daily_instance[instance_id]['state']) == 1:
-                        if instance_state.get('StopTime') > event_time:
-                            del all_daily_instance[instance_id]
-                            add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time)
-                        continue
+        try:
+            for instance_id, _ in instance_ids:
+                # add the stop time information of instance to daily instance list
+                if instance_id in all_daily_instance:
+                    try:
+                        for sequence, instance_state in enumerate(all_daily_instance[instance_id]['state']):
+                            start_time = instance_state.get('StartTime')
+                            if start_datetime == start_time and len(all_daily_instance[instance_id]['state']) == 1:
+                                if instance_state.get('StopTime') > event_time:
+                                    del all_daily_instance[instance_id]
+                                    add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time)
+                                continue
 
-                    if start_time <= event_time:
-                        instance_state['StopTime'] = event_time
-                    else:
-                        previous_start_time = all_daily_instance[instance_id]['state'][sequence-1].get('StartTime')
-                        previous_stop_time = all_daily_instance[instance_id]['state'][sequence-1].get('StopTime')
-                        if previous_start_time != None and previous_stop_time != None and previous_start_time < event_time and previous_stop_time > event_time:
-                            all_daily_instance[instance_id]['state'][sequence-1]['StopTime'] = event_time
+                            if start_time <= event_time:
+                                instance_state['StopTime'] = event_time
+                            else:
+                                previous_start_time = all_daily_instance[instance_id]['state'][sequence-1].get('StartTime')
+                                previous_stop_time = all_daily_instance[instance_id]['state'][sequence-1].get('StopTime')
+                                if previous_start_time != None and previous_stop_time != None and previous_start_time < event_time and previous_stop_time > event_time:
+                                    all_daily_instance[instance_id]['state'][sequence-1]['StopTime'] = event_time
+                    except:
+                        send_slack_message(f'An exception that occurred in getting the stop time information of {instance_id}.')
 
-            # store new instance information
-            else:
-                # Start only terminate
-                if mode == "TerminateInstances":
-                    continue
-                all_daily_instance = add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time)
+                # store new instance information
+                else:
+                    try:
+                        # Start only terminate
+                        if mode == "TerminateInstances":
+                            continue
+                        all_daily_instance = add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time)
+                    except:
+                        send_slack_message(f'An exception that occurred in storing the new instance information of {instance_id} during the running "get_stop_instances()" function.')
+        except ValueError as e:
+            send_slack_message(f'An exception that occurred in running "get_stopt_instances()" function.\nCheck the error message: {e}')
     return all_daily_instance
 
 
@@ -323,9 +345,9 @@ def create_message(region, all_daily_instance):
                 instance_count += 1
 
     except KeyError:
-        print(f"create_message() : A problem collecting instance information. Related functions is get_run_instance_information() in {region}")
+        send_slack_message(f"create_message() : A problem collecting instance information. Related functions is get_run_instance_information() in {region}")
     except Exception as e:
-        print(f"create_message() : Exception in relation to <{e}> in {region}")
+        send_slack_message(f"create_message() : Exception in relation to <{e}> in {region}")
     
     report_message = [f'{region} ({instance_count})\n']
     for kind in message:
