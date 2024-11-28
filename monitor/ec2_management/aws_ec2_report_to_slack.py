@@ -6,21 +6,6 @@ from slack_msg_sender import send_slack_message
 
 SLACK_URL = os.environ['SLACK_DDPS']
 
-# instance management : 모든 리전의 인스턴스와 볼륨 탐색 및 리스트 반환
-def instance_management():
-    try:
-        # regions 검색용 Boto3 EC2 클라이언트 생성
-        ec2_client = boto3.client('ec2')
-        regions = [ region['RegionName'] for region in ec2_client.describe_regions()['Regions'] ]
-
-        running_instances, stopped_instances = get_instance_items(regions)
-        volume_list = get_volume_items(regions)
-
-        return running_instances, stopped_instances, volume_list
-    except Exception as e:
-        send_slack_message(f"인스턴스와 볼륨 조회 실패.\n{e}")
-
-
 # get instance items : 모든 리전의 인스턴스 탐색 후 리스트 반환
 def get_instance_items(regions):
     try:
@@ -30,49 +15,51 @@ def get_instance_items(regions):
         # 리전에 존재하는 모든 인스턴스 탐색
         for ec2_region in regions:
             ec2_list = boto3.client('ec2', region_name=ec2_region)
-            instances = ec2_list.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running', 'stopped']}]).get('Reservations')
-
-            if not instances:
+            instances_data = ec2_list.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running', 'stopped']}]).get('Reservations')
+            
+            if not instances_data:
                 continue
-            else:
-                instances = instances[0]
             
             current_time = datetime.now(timezone.utc)
 
             # 한 리전의 인스턴스 정보 추출
-            for instance in instances['Instances']:
-                # 인스턴스 탐색
-                key_name = instance.get('KeyName')
+            for instances in instances_data:
+                if instances.get('Instances') is None:
+                    continue
 
-                try:
-                    for tag in instance['Tags']:
-                        if tag['Key'] == 'Name':
-                            instance_info = tag['Value']
-                            break
-                except Exception as e:
-                    instance_info = instance['InstanceId']
-                instance_type = instance['InstanceType']
-                instance_state = instance['State']['Name']
-                if instance_state == 'running':
-                    launch_time = instance['LaunchTime'].replace(tzinfo=timezone.utc)
-                    instance_time = current_time - launch_time
-                else:
-                    stopped_time = re.findall(r'.*\((.*)\)', instance['StateTransitionReason'])[0][:-4]
-                    instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-                days = instance_time.days
-                hours = instance_time.seconds // 3600
-                minutes = (instance_time.seconds % 3600) // 60
+                for instance in instances.get('Instances'):
+                    # 인스턴스 탐색
+                    key_name = instance.get('KeyName')
 
-                # 인스턴스의 볼륨ID 확인
-                for mapping in instance['BlockDeviceMappings']:
-                    volume_id = mapping['Ebs']['VolumeId']
+                    instance_info = instance.get('InstanceId')
+                    if instance.get('Tags') is not None:
+                        for tag in instance.get('Tags'):
+                                if tag.get('Key') == 'Name':
+                                    instance_info = tag.get('Value')
+                                    break
+                        
+                    instance_type = instance.get('InstanceType')
+                    instance_state = instance['State']['Name']
+                    if instance_state == 'running':
+                        launch_time = instance['LaunchTime'].replace(tzinfo=timezone.utc)
+                        instance_time = current_time - launch_time
+                    else:
+                        stopped_time = re.findall(r'.*\((.*)\)', instance['StateTransitionReason'])[0][:-4]
+                        instance_time = current_time - datetime.strptime(stopped_time, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                    days = instance_time.days
+                    hours = instance_time.seconds // 3600
+                    minutes = (instance_time.seconds % 3600) // 60
 
-                # 인스턴스 저장
-                instance_dsc = {'region':ec2_region, 'key_name':key_name, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
-                if instance_state == 'running':
-                    running_instances.append(instance_dsc)
-                else:
-                    stopped_instances.append(instance_dsc)
+                    # 인스턴스의 볼륨ID 확인
+                    for mapping in instance['BlockDeviceMappings']:
+                        volume_id = mapping['Ebs']['VolumeId']
+
+                    # 인스턴스 저장
+                    instance_dsc = {'region':ec2_region, 'key_name':key_name, 'info':instance_info, 'type':instance_type, 'volume':volume_id, 'time_days':days, 'time_hours':hours, 'time_minutes':minutes}
+                    if instance_state == 'running':
+                        running_instances.append(instance_dsc)
+                    else:
+                        stopped_instances.append(instance_dsc)
 
         # 인스턴스 항목 내림차순 정렬
         sorted_running_instances = sorted(running_instances, key=lambda x: (x['time_days'], x['time_hours'], x['time_minutes']), reverse=True)
@@ -95,28 +82,29 @@ def get_volume_items(regions):
             
             current_time = datetime.now(timezone.utc)
             # 하나의 EBS 볼륨 확인
-            for volume in volumes['Volumes']:
-                volume_id = volume['VolumeId']
-                size_gb = volume['Size']
-                volume_type = volume['VolumeType']
-                snapshot_id = volume['SnapshotId']
-                created_time = current_time - volume['CreateTime'].replace(tzinfo=timezone.utc)
-                
-                # check the callisto volume
-                callisto_volume = False
-                for key in volume['Tags']:
-                    if "kubernetes.io" in key.get('Key'):
-                        callisto_volume = True
-                        break
-                if callisto_volume and created_time.days <= 14:
-                    continue
-                orphaned_volumes.append({'region': volume_region, 'id':volume_id, 'type':volume_type, 'size':size_gb, 'snapshot':snapshot_id, 'time':created_time.days, 'callisto':callisto_volume})
+            if volumes.get('Volumes') is not None:
+                for volume in volumes.get('Volumes'):
+                    volume_id = volume.get('VolumeId')
+                    size_gb = volume.get('Size')
+                    volume_type = volume.get('VolumeType')
+                    snapshot_id = volume.get('SnapshotId')
+                    created_time = current_time - volume.get('CreateTime').replace(tzinfo=timezone.utc)
+                    
+                    # check the callisto volume
+                    callisto_volume = False
+                    if volume.get('Tags') is not None:
+                        for key in volume['Tags']:
+                            if "kubernetes.io" in key.get('Key'):
+                                callisto_volume = True
+                                break
+                        if callisto_volume and created_time.days <= 14:
+                            continue
+                    orphaned_volumes.append({'region': volume_region, 'id':volume_id, 'type':volume_type, 'size':size_gb, 'snapshot':snapshot_id, 'time':created_time.days, 'callisto':callisto_volume})
 
         sorted_orphaned_volumes = sorted(orphaned_volumes, key=lambda x: (x['time']), reverse=True)
-
         return sorted_orphaned_volumes
     except Exception as e:
-        send_slack_message(f"볼륨 조회 실패\n{e}")
+        print(f"볼륨 조회 실패\n{e}")
 
 
 # created message : 인스턴스 및 볼륨 리스트를 메세지로 생성
@@ -176,14 +164,24 @@ def lambda_handler(event, context):
     utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
-    head_message = f"Account: {os.environ['EMAIL']}\n"
+    head_message = f"Account: test@ddps.com\n"
     head_message += (korea_time+"\n")
 
+    running_instances, stopped_instances, orphaned_volumes = 0, 0, 0
+    
     try:
-        running_instances, stopped_instances, orphaned_volumes  = instance_management()
+        # regions 검색용 Boto3 EC2 클라이언트 생성
+        ec2_client = boto3.client('ec2')
+        regions = [ region['RegionName'] for region in ec2_client.describe_regions()['Regions'] ]
+
+        running_instances, stopped_instances = get_instance_items(regions)
+        orphaned_volumes = get_volume_items(regions)
+    except Exception as e:
+        send_slack_message(f"인스턴스 관리가 정상적으로 이루어지지 않았습니다.\n{e}")
+    try:
         message = created_message(head_message, running_instances, stopped_instances, orphaned_volumes)
         response = slack_message(message)
         return "The Instance List was successfully sent in a Slack. Check the Slack message."
     except Exception as e:
-        send_slack_message(f"인스턴스 관리가 정상적으로 이루어지지 않았습니다.\n{e}")
+        send_slack_message(f"메세지 생성이 원활하게 이루어지지 않았습니다.\n{e}")
         return "This instance management was failed. Check the Code or instances in aws."
