@@ -164,7 +164,7 @@ def lambda_handler(event, context):
     utc_time = datetime.now(timezone.utc)
     korea_time = (utc_time + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
 
-    head_message = f"Account: test@ddps.com\n"
+    head_message = f"Account: {os.environ['EMAIL']}\n"
     head_message += (korea_time+"\n")
 
     running_instances, stopped_instances, orphaned_volumes = 0, 0, 0
