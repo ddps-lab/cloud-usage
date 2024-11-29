@@ -104,7 +104,7 @@ def get_volume_items(regions):
         sorted_orphaned_volumes = sorted(orphaned_volumes, key=lambda x: (x['time']), reverse=True)
         return sorted_orphaned_volumes
     except Exception as e:
-        print(f"볼륨 조회 실패\n{e}")
+        send_slack_message(f"볼륨 조회 실패\n{e}")
 
 
 # created message : 인스턴스 및 볼륨 리스트를 메세지로 생성
