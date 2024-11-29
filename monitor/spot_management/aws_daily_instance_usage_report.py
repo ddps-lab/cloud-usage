@@ -139,7 +139,6 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance):
 
         if instance_ids == None:
             continue
-
         try:
             for instance_id, _ in instance_ids:
                 # add the stop time information of instance to daily instance list
@@ -273,7 +272,7 @@ def get_spot_requests_information(region, instance_id, request_id):
         if response['Events'][0]['EventName'] == 'RequestSpotInstances':
             event_informations = json.loads(response['Events'][0].get('CloudTrailEvent'))
             valid_until = event_informations['requestParameters'].get('validUntil')
-            stop_time = (datetime.fromtimestamp(valid_until/1000)).replace(microsecond=0)
+            stop_time = (datetime.fromtimestamp(valid_until/1000)).replace(microsecond=0, tzinfo=timezone.utc)
         return stop_time
     except:
         return None
@@ -387,7 +386,9 @@ def lambda_handler(event, context):
     # setting datetime informations for searching daily logs in cloud trail service
     global search_datetime, start_datetime, end_datetime
     utc_datetime = datetime.now(timezone.utc)
-    search_datetime = utc_datetime + timedelta(days=-1, hours=9)
+    if utc_datetime.hour < 15:
+        utc_datetime += timedelta(days=-1)
+    search_datetime = utc_datetime + timedelta(hours=9)
     start_datetime = ((utc_datetime + timedelta(days=-1, hours=9)).astimezone(timezone(timedelta(hours=9)))).replace(hour=0, minute=0, second=0, microsecond=0)
     end_datetime = ((utc_datetime + timedelta(days=-1, hours=9)).astimezone(timezone(timedelta(hours=9)))).replace(hour=23, minute=59, second=59, microsecond=0)
 
