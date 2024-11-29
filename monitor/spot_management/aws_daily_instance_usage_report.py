@@ -14,8 +14,8 @@ SLACK_URL = os.environ['SLACK_DDPS']
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
 def daily_instance_usage(region):
     all_daily_instance = {}
-    search_modes = ["RunInstances", "StartInstances", "TerminateInstances", "StopInstances"]
-    check_mode = [True, True, False, False]
+    search_modes = ["RunInstances", "StartInstances", "TerminateInstances", "StopInstances", "BidEvictedEvent"]
+    check_mode = [True, True, False, False, False]
     
     # store cloud trail logs of all region
     for i, mode in enumerate(search_modes):
@@ -135,7 +135,11 @@ def get_start_instances(mode, cloudtrail, response, all_daily_instance):
 # get_stop_instances() : It stores the instance information of the 'terminate' and 'stop' state.
 def get_stop_instances(mode, cloudtrail, response, all_daily_instance):
     for events in response['Events']:
-        instance_ids, event_time = get_instance_ids(events)
+        instance_ids, event_time = None, None
+        if mode == "BidEvictedEvent":
+            instance_ids, event_time = get_interrupt_instance_ids(events)
+        else:
+            instance_ids, event_time = get_instance_ids(events)
 
         if instance_ids == None:
             continue
@@ -199,6 +203,16 @@ def get_instance_ids(events):
             
     event_time = events['EventTime'].replace(tzinfo=timezone.utc)
 
+    return instance_ids, event_time
+
+
+# get_interrupt_instance_ids() : Collect information when the instance had interrupt events
+def get_interrupt_instance_ids(events):
+    cloud_trail_event = json.loads(events['CloudTrailEvent'])
+    instance_ids = [
+        (item, None) for item in cloud_trail_event['serviceEventDetails']['instanceIdSet']
+    ]
+    event_time = events['EventTime'].replace(tzinfo=timezone.utc)
     return instance_ids, event_time
 
 
@@ -386,11 +400,9 @@ def lambda_handler(event, context):
     # setting datetime informations for searching daily logs in cloud trail service
     global search_datetime, start_datetime, end_datetime
     utc_datetime = datetime.now(timezone.utc)
-    if utc_datetime.hour < 15:
-        utc_datetime += timedelta(days=-1)
-    search_datetime = utc_datetime + timedelta(hours=9)
-    start_datetime = ((utc_datetime + timedelta(days=-1, hours=9)).astimezone(timezone(timedelta(hours=9)))).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_datetime = ((utc_datetime + timedelta(days=-1, hours=9)).astimezone(timezone(timedelta(hours=9)))).replace(hour=23, minute=59, second=59, microsecond=0)
+    search_datetime = utc_datetime + timedelta(days=-1, hours=9)
+    start_datetime = ((utc_datetime + timedelta(days=-1)).astimezone(timezone(timedelta(hours=9)))).replace(hour=0, minute=0, second=0, microsecond=0)
+    end_datetime = ((utc_datetime + timedelta(days=-1)).astimezone(timezone(timedelta(hours=9)))).replace(hour=23, minute=59, second=59, microsecond=0)
 
     # creating head message
     header = f"*Daily Instances Usage Report (DATE: {search_datetime.strftime('%Y-%m-%d')})*"
