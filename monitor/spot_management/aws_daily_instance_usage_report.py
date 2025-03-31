@@ -3,30 +3,34 @@
 # Therefore, please note that the code may be a little complicated and inefficient.
 
 import boto3
-import json, urllib.request, os
+import boto3.session
+import json
+import os
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from slack_msg_sender import send_slack_message
 
-
 SLACK_URL = os.environ['SLACK_DDPS']
+session = boto3.session.Session()
 
 
 # daily_instance_usage() : Collect instance information that 'run', 'start', 'terminate', and 'stop' for each region.
 def daily_instance_usage(region):
     all_daily_instance = {}
-    search_modes = ["RunInstances", "StartInstances", "TerminateInstances", "StopInstances", "BidEvictedEvent"]
+    search_modes = [("RunInstances", "start"), ("StartInstances", "start"), ("TerminateInstances", "end"),
+                    ("StopInstances", "end"), ("BidEvictedEvent", "end"), ("CreateTags", "update")]
     check_mode = [True, True, False, False, False]
-    
+
     # store cloud trail logs of all region
-    for i, mode in enumerate(search_modes):
+    for mode, check in search_modes:
         try:
-            cloudtrail = boto3.client('cloudtrail', region_name=region)
+            cloudtrail = session.client('cloudtrail', region_name=region)
 
             response_list = []
             token, response = search_instances(cloudtrail, "EventName", mode, False, 0, None)
             response_list.append(response)
 
-            while(token):
+            while (token):
                 if response.get('NextToken') != None:
                     token_code = response['NextToken']
 
@@ -35,14 +39,16 @@ def daily_instance_usage(region):
         except:
             send_slack_message(f'An exception that occurred while getting the result of cloud trail query response about {mode} events in {region}')
 
-        try:            
+        try:
             # call the following functions according to the selected mode
             # parameter description : prevents duplicate searches, act the selected mode, and extracts data from results
             for response in response_list:
-                if check_mode[i]:
+                if check == "start":
                     all_daily_instance = get_start_instances(mode, cloudtrail, response, all_daily_instance)
-                else:
+                elif check == "end":
                     all_daily_instance = get_stop_instances(mode, cloudtrail, response, all_daily_instance)
+                else:
+                    all_daily_instance = get_update_instances(mode, cloudtrail, response, all_daily_instance)
 
         except Exception as e:
             send_slack_message(f'An Exception that occurred while collecting instance usage information in {region}\n Check the error message: {e}')
@@ -55,26 +61,26 @@ def search_instances(cloudtrail, eventname, item, token, period, token_code):
     response = []
     if token:
         response = cloudtrail.lookup_events(
-            EndTime = end_datetime,
-            LookupAttributes = [
+            EndTime=end_datetime,
+            LookupAttributes=[
                 {
                     "AttributeKey": eventname,
                     "AttributeValue": item
                 },
             ],
-            StartTime = (start_datetime - timedelta(days=period)),
-            NextToken = token_code
+            StartTime=(start_datetime - timedelta(days=period)),
+            NextToken=token_code
         )
     else:
         response = cloudtrail.lookup_events(
-            EndTime = end_datetime,
-            LookupAttributes = [
+            EndTime=end_datetime,
+            LookupAttributes=[
                 {
                     "AttributeKey": eventname,
                     "AttributeValue": item
                 },
             ],
-            StartTime = (start_datetime - timedelta(days=period))
+            StartTime=(start_datetime - timedelta(days=period))
         )
 
     if response.get('NextToken') == None:
@@ -180,6 +186,24 @@ def get_stop_instances(mode, cloudtrail, response, all_daily_instance):
     return all_daily_instance
 
 
+# get_update_instances() : It stores the instance information of the 'update' state.
+# It is used to update the name tag of the instance.
+def get_update_instances(mode, cloudtrail, response, all_daily_instance):
+    for events in response['Events']:
+        event_informations = json.loads(events['CloudTrailEvent'])
+        if event_informations.get('responseElements') != None:
+            instance_ids = [resource["resourceId"]
+                            for resource in event_informations['requestParameters']['resourcesSet']['items']]
+            name_tag = [resource["value"] if (resource["key"].endswith('name') or resource["key"].endswith('nodeclaim'))
+                        else None for resource in event_informations["requestParameters"]["tagSet"]["items"]]
+            name_tag = [tag for tag in name_tag if tag is not None]
+            if len(name_tag) != 0:
+                for instance_id in instance_ids:
+                    if instance_id in all_daily_instance:
+                        all_daily_instance[instance_id]['NameTag'] = name_tag[0] if name_tag else None
+    return all_daily_instance
+
+
 # get_instance_ids() : Collect instance IDs to extract information for all instances in an event
 def get_instance_ids(events):
     # get instance id in result of cloud trail service
@@ -193,14 +217,14 @@ def get_instance_ids(events):
                     instance_ids.append((resource['ResourceName'], None))
         except KeyError:
             return None, 0
-    
+
     else:
         if event_informations['responseElements'].get('omitted'):
             return None, 0
         instances = event_informations['responseElements']['instancesSet']['items']
         for instance in instances:
             instance_ids.append((instance.get('instanceId'), instance.get('spotInstanceRequestId', '')))
-            
+
     event_time = events['EventTime'].replace(tzinfo=timezone.utc)
 
     return instance_ids, event_time
@@ -218,7 +242,7 @@ def get_interrupt_instance_ids(events):
 
 # add_new_instance_information() : Collect information when the input instance has new information
 def add_new_instance_information(cloudtrail, instance_id, all_daily_instance, event_time):
-    all_daily_instance[instance_id] = {'state': [{'StartTime': start_datetime,'StopTime': event_time}]}
+    all_daily_instance[instance_id] = {'state': [{'StartTime': start_datetime, 'StopTime': event_time}]}
     all_daily_instance = search_instance_information(cloudtrail, instance_id, all_daily_instance)
     return all_daily_instance
 
@@ -228,7 +252,7 @@ def search_instance_information(cloudtrail, run_instance_id, all_daily_instance)
     token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, False, 88, None)
 
     if token:
-        while(token):
+        while (token):
             token, response = search_instances(cloudtrail, "ResourceName", run_instance_id, token, 88, response['NextToken'])
     for events in response['Events']:
         if events.get('EventName') == 'RunInstances':
@@ -238,7 +262,7 @@ def search_instance_information(cloudtrail, run_instance_id, all_daily_instance)
             if events.get('EventName') in ['StartInstances', 'StopInstances', 'TerminateInstances']:
                 all_daily_instance[run_instance_id]['UserName'] = events.get('Username')
                 break
-    
+
     return all_daily_instance
 
 
@@ -275,7 +299,7 @@ def get_run_instance_information(events, run_instance_id, all_daily_instance):
 # get_spot_requests_information() : Find the stop time recorded on spot request
 def get_spot_requests_information(region, instance_id, request_id):
     try:
-        cloudtrail = boto3.client('cloudtrail', region_name=region)
+        cloudtrail = session.client('cloudtrail', region_name=region)
         if request_id == None:
             _, response = search_instances(cloudtrail, 'Username', instance_id, False, 0, None)
             for events in response['Events']:
@@ -290,7 +314,7 @@ def get_spot_requests_information(region, instance_id, request_id):
         return stop_time
     except:
         return None
-    
+
 
 # create_message() : Create a message to send to Slack.
 def create_message(region, all_daily_instance):
@@ -302,7 +326,7 @@ def create_message(region, all_daily_instance):
             if instance_id == 'SpotRquests':
                 message['request'] += f"{' ':>12}이외 스팟리퀘스트 요청이 {all_daily_instance['SpotRquests']['Number']}건 실행되었습니다.\n"
                 continue
-        
+
             for sequence, instance_state in enumerate(all_daily_instance[instance_id]['state']):
                 state_running = False
                 # when time information about start and stop be in all daily instance
@@ -361,7 +385,7 @@ def create_message(region, all_daily_instance):
         send_slack_message(f"create_message() : A problem collecting instance information. Related functions is get_run_instance_information() in {region}")
     except Exception as e:
         send_slack_message(f"create_message() : Exception in relation to <{e}> in {region}")
-    
+
     report_message = [f'{region} ({instance_count})\n']
     for kind in message:
         if kind == 'request':
@@ -384,7 +408,7 @@ def create_message(region, all_daily_instance):
         report_message[len(report_message)-1] += f"{' ':4}실험을 위한 {experiment_count}개의 인스턴스가 3초 이내로 실행되었습니다.\n"
 
     return report_message
-    
+
 
 # push_slack() : Push a message to Slack.
 def push_slack(message):
@@ -399,10 +423,11 @@ def push_slack(message):
 def lambda_handler(event, context):
     # setting datetime informations for searching daily logs in cloud trail service
     global search_datetime, start_datetime, end_datetime
-    utc_datetime = datetime.now(timezone.utc)
-    search_datetime = utc_datetime + timedelta(days=-1, hours=9)
-    start_datetime = ((utc_datetime + timedelta(days=-1)).astimezone(timezone(timedelta(hours=9)))).replace(hour=0, minute=0, second=0, microsecond=0)
-    end_datetime = ((utc_datetime + timedelta(days=-1)).astimezone(timezone(timedelta(hours=9)))).replace(hour=23, minute=59, second=59, microsecond=0)
+    utc_datetime = datetime.now(timezone.utc) + timedelta(days=1)
+    kst_datetime = (utc_datetime - timedelta(days=1)).astimezone(timezone(timedelta(hours=9)))
+    search_datetime = kst_datetime.replace(hour=9, minute=0, second=0, microsecond=0)
+    start_datetime = kst_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_datetime = kst_datetime.replace(hour=23, minute=59, second=59, microsecond=0)
 
     # creating head message
     header = f"*Daily Instances Usage Report (DATE: {search_datetime.strftime('%Y-%m-%d')})*"
@@ -410,19 +435,20 @@ def lambda_handler(event, context):
     stop_message = [False, "*생성된 인스턴스의 수가 많아 인스턴스 사용량 전달을 중단합니다.*"]
 
     # created region list and called main function
-    ec2 = boto3.client('ec2')
+    ec2 = session.client('ec2')
     regions = [region['RegionName'] for region in ec2.describe_regions()['Regions']]
+
     for region in regions:
         if (datetime.now(timezone.utc) - utc_datetime).seconds > 270:
             stop_message[0] = True
             break
-            
+
         all_daily_instance = daily_instance_usage(region)
 
         # created message to slack and pushed to slack
         if len(all_daily_instance) != 0:
             all_message.append(create_message(region, all_daily_instance))
-         
+
     push_slack(header)
     if len(all_message) != 0:
         for region_message in all_message:
@@ -434,3 +460,7 @@ def lambda_handler(event, context):
         push_slack("Instances not used.")
 
     return "perfect jobs. check the slack message, plz."
+
+
+if __name__ == "__main__":
+    lambda_handler(None, None)
