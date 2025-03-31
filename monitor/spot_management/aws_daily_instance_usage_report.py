@@ -423,7 +423,7 @@ def push_slack(message):
 def lambda_handler(event, context):
     # setting datetime informations for searching daily logs in cloud trail service
     global search_datetime, start_datetime, end_datetime
-    utc_datetime = datetime.now(timezone.utc) + timedelta(days=1)
+    utc_datetime = datetime.now(timezone.utc)
     kst_datetime = (utc_datetime - timedelta(days=1)).astimezone(timezone(timedelta(hours=9)))
     search_datetime = kst_datetime.replace(hour=9, minute=0, second=0, microsecond=0)
     start_datetime = kst_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
