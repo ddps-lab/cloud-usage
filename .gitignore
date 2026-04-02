@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.egg-info/  # Python package metadata (auto-generated)
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude Code workspace (documentation and settings)
+# These are collaboration/documentation files, not code
+CLAUDE.md
+.claude/
+memory/
+ARCHITECTURE.md
+PROJECT_STRUCTURE.md
+
+# Environment variables (sensitive)
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+
+# AWS/Cloud credentials
+~/.aws/
+~/.gcp/
+
+# uv (UV package manager)
+.venv/
+uv.lock
+__pypackages__/
+.uv/

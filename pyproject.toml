@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-usage-monitor"
+version = "0.1.0"
+description = "Multi-cloud cost monitoring and resource management system"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+keywords = ["aws", "gcp", "azure", "cost-monitoring", "lambda"]
+
+# Production dependencies
+dependencies = [
+    "boto3>=1.26.0",              # AWS SDK
+    "botocore>=1.29.0",           # AWS core (included with boto3)
+    "google-cloud-bigquery>=3.11.0",  # GCP BigQuery
+    "google-auth>=2.20.0",        # GCP authentication
+    "google-auth-oauthlib>=1.0.0", # GCP OAuth
+    "requests>=2.28.0",           # HTTP library
+    "adal>=1.2.7",                # Azure AD authentication
+    "slack_sdk>=3.19.0",          # Slack Bot Token API (monitor_v2)
+]
+
+[tool.setuptools.packages.find]
+include = ["monitor*", "print_test*"]
