@@ -17,7 +17,7 @@ from monitor_v2.cost.report import send_main1_report
 KST = timezone(timedelta(hours=9))
 
 if __name__ == "__main__":
-    today_kst = datetime.now(KST).date() - timedelta(days=2)
+    today_kst = datetime.now(KST).date() #- timedelta(days=1)
     session = boto3.session.Session()
     ce = boto3.client('ce', region_name='us-east-1')
     sts = boto3.client('sts')

@@ -147,7 +147,7 @@ def main():
 
     # CE는 UTC 자정 기준으로 하루를 끊으므로 UTC date를 today로 사용.
     # KST date를 쓰면 자정~09:00 KST 구간에서 D-1이 하루 어긋날 수 있음.
-    today_kst = datetime.now(timezone.utc).date() - timedelta(days=2)
+    today_kst = datetime.now(timezone.utc).date() #- timedelta(days=1)
     print(f"\n  기준 날짜 (UTC date, CE 컷오프 기준): {today_kst}")
     print(f"  리포트 대상 (D-1):                   {today_kst - timedelta(days=1)}")
     print(f"  현재 KST 시각:                        {datetime.now(KST).strftime('%Y-%m-%d %H:%M')}")

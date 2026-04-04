@@ -29,20 +29,9 @@ SEP  = "─" * 70
 SEP2 = "=" * 70
 KST  = timezone(timedelta(hours=9))
 
-REGION_ALIAS = {
-    'ap-northeast-2': '서울',
-    'ap-northeast-1': '도쿄',
-    'us-east-1':      '버지니아',
-    'us-west-2':      '오레곤',
-    'eu-west-1':      '아일랜드',
-    'eu-central-1':   '프랑크푸르트',
-    'ap-southeast-1': '싱가포르',
-}
-
 
 def _region_label(region: str) -> str:
-    alias = REGION_ALIAS.get(region, '')
-    return f"{region} ({alias})" if alias else region
+    return f"{region}"
 
 
 def _runtime_str(launch_time, end_time=None) -> str:
