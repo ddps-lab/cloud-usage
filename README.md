@@ -23,7 +23,19 @@ uv sync
 | `AWS_PROFILE` | AWS 프로파일명 |
 | `AWS_DEFAULT_REGION` | 기본 AWS 리전 |
 | `ACCOUNT_NAME` | Slack 리포트 헤더에 표시할 계정 별칭 |
-| `IAM_SLACK_USER_MAP` | IAM User → Slack User ID 매핑 JSON (DM 발송용, 선택) |
+
+#### IAM → Slack 사용자 매핑 (DM 발송용, 선택)
+
+`monitor_v2/iam_to_slack.json` 파일로 관리한다.
+
+```json
+{
+  "alice": "U012ABC3456",
+  "bob":   "U098XYZ7890"
+}
+```
+
+파일이 없을 경우 환경변수 `IAM_SLACK_USER_MAP` (JSON 문자열)을 폴백으로 사용한다.
 
 ---
 
