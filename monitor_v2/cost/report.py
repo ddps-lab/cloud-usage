@@ -23,7 +23,7 @@ from ..slack import client as slack
 from ..utils.blocks import (
     header as _header, section as _section, divider as _divider,
     context as _context, md_table_blocks as _md_table_blocks,
-    table_section as _table_section,
+    table_section as _table_section, fields_section as _fields_section,
     calc_change, fmt_change, EC2_SERVICES,
 )
 
@@ -42,6 +42,10 @@ def _top_n(costs: dict, n: int = TOP_N) -> list:
 # Main 1
 # ---------------------------------------------------------------------------
 
+def _arrow(delta: float) -> str:
+    return "▲" if delta >= 0 else "▼"
+
+
 def _build_main1(
     d1_date: date, daily_d1: dict, daily_d2: dict,
     mtd_this: float, forecast: float = 0.0,
@@ -52,34 +56,40 @@ def _build_main1(
     d_yday, p_yday = calc_change(total_d1, total_d2)
     projected      = mtd_this + forecast
 
-    daily_rows = [
-        [str(d1_date), f"${total_d1:,.2f}", ""],
-        [str(d2_date), f"${total_d2:,.2f}", fmt_change(d_yday, p_yday)],
+    # 일일 비용
+    daily_fields = [
+        f"*{d1_date}*\n`${total_d1:,.2f}`",
+        f"*{d2_date}*\n`${total_d2:,.2f}` _{_arrow(d_yday)} {fmt_change(d_yday, p_yday)}_",
     ]
-    forecast_cell = (
-        f"${projected:,.2f} _(잔여 +${forecast:,.2f})_" if forecast > 0
+
+    # 월 누계
+    forecast_str = (
+        f"`${projected:,.2f}` _(잔여 +${forecast:,.2f})_" if forecast > 0
         else "_(예측 데이터 없음)_"
     )
-    mtd_rows = [
-        ["이번달 누계", f"${mtd_this:,.2f}", ""],
-        ["이달 예상",   forecast_cell,       ""],
+    mtd_fields = [
+        f"*이번달 누계*\n`${mtd_this:,.2f}`",
+        f"*이달 예상*\n{forecast_str}",
     ]
-    top5_rows = []
+
+    # Top 5 서비스
+    top5_blocks = []
     for rank, (service, cost) in enumerate(_top_n(daily_d1), 1):
         d1, p1 = calc_change(cost, daily_d2.get(service, 0.0))
-        top5_rows.append([str(rank), service, f"${cost:,.2f}", fmt_change(d1, p1)])
+        top5_blocks.append(_section(
+            f"*{rank}. {service}* — `${cost:,.2f}`\n어제대비 {_arrow(d1)} {fmt_change(d1, p1)}"
+        ))
 
     return [
         _header(f"AWS Cost Report  |  {d1_date}  |  {ACCOUNT_NAME}"),
+        _section("*[ 일일 비용 ]*"),
+        _fields_section(daily_fields),
         _divider(),
-        *_table_section("*[ 일일 비용 ]*",   ["날짜", "비용", "변화"],  daily_rows),
+        _section("*[ 월 누계 ]*"),
+        _fields_section(mtd_fields),
         _divider(),
-        *_table_section("*[ 월 누계 ]*",     ["항목", "비용", "변화"],  mtd_rows),
-        _divider(),
-        *_table_section(
-            f"*[ Top {TOP_N} 서비스  {d1_date} ]*",
-            ["#", "서비스", "비용", "어제대비"], top5_rows,
-        ),
+        _section(f"*[ Top {TOP_N} 서비스  {d1_date} ]*"),
+        *top5_blocks,
         _divider(),
         _context("자세한 내용은 스레드에서 확인하세요."),
     ]

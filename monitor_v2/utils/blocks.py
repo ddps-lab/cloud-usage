@@ -22,7 +22,8 @@ EC2_SERVICES = {
     'EC2 - Other',
 }
 
-_MD_BLOCK_MAX = 2800  # Slack 3000자 제한에서 여유분 확보
+_MD_BLOCK_MAX      = 2800   # Slack 개별 markdown 블록 3000자 제한에서 여유분 확보
+_AGGREGATE_MD_MAX  = 9500   # Slack 메시지 내 markdown 블록 합산 10000자 제한에서 여유분 확보
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +38,11 @@ def header(text: str) -> HeaderBlock:
 def section(text: str) -> SectionBlock:
     """mrkdwn 텍스트 섹션. 소제목 및 본문용."""
     return SectionBlock(text=MarkdownTextObject(text=text))
+
+
+def fields_section(fields: list) -> SectionBlock:
+    """2열 그리드 SectionBlock. fields는 mrkdwn 문자열 리스트 (최대 10개)."""
+    return SectionBlock(fields=[MarkdownTextObject(text=f) for f in fields[:10]])
 
 
 def divider() -> DividerBlock:
@@ -85,6 +91,33 @@ def md_table_blocks(headers: list, rows: list) -> list:
 def table_section(title: str, headers: list, rows: list) -> list:
     """소제목 section + 전체 행 Markdown 테이블 블록 리스트."""
     return [section(title), *md_table_blocks(headers, rows)]
+
+
+def split_by_aggregate(blocks: list) -> list:
+    """
+    단일 메시지 내 markdown 블록 합산이 _AGGREGATE_MD_MAX를 초과하지 않도록
+    blocks를 분할하여 리스트의 리스트로 반환한다.
+
+    markdown 블록(dict, type='markdown')의 text 길이만 합산 대상으로 계산한다.
+    분할 경계는 항상 markdown 블록 앞에서 발생하므로 section/divider 등은 이동하지 않는다.
+    """
+    groups: list  = []
+    current: list = []
+    agg_len: int  = 0
+
+    for block in blocks:
+        if isinstance(block, dict) and block.get('type') == 'markdown':
+            text_len = len(block.get('text', ''))
+            if current and agg_len + text_len > _AGGREGATE_MD_MAX:
+                groups.append(current)
+                current, agg_len = [], 0
+            agg_len += text_len
+        current.append(block)
+
+    if current:
+        groups.append(current)
+
+    return groups or [[]]
 
 
 # ---------------------------------------------------------------------------

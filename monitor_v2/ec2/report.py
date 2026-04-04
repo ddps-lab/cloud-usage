@@ -18,7 +18,8 @@ from datetime import datetime, timedelta, timezone
 from ..utils.blocks import (
     header as _header, section as _section, divider as _divider,
     context as _context, md_table_blocks as _md_table_blocks,
-    table_section as _table_section,
+    table_section as _table_section, fields_section as _fields_section,
+    split_by_aggregate as _split_by_aggregate,
     calc_change, fmt_change, EC2_SERVICES,
 )
 from .iam_resolver import build_instance_creator_map, get_slack_user_id
@@ -83,6 +84,10 @@ def _ec2_by_user(by_creator: dict) -> dict:
 # Main 2 본문
 # ---------------------------------------------------------------------------
 
+def _arrow(delta: float) -> str:
+    return "▲" if delta >= 0 else "▼"
+
+
 def _build_main2(
     d1_date,
     ec2_type_cost: dict,
@@ -107,42 +112,48 @@ def _build_main2(
 
     type_totals  = {itype: sum(r.values()) for itype, r in ec2_type_cost.items()}
     sorted_types = sorted(type_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+    top5_users   = sorted(ec2_user_mtd.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    top5_users = sorted(ec2_user_mtd.items(), key=lambda x: x[1], reverse=True)[:5]
-
-    region_rows = [[r, f"${c:,.2f}"] for r, c in sorted_regions]
-    type_rows   = [
-        [str(rank), t, f"${c:,.2f}"]
-        for rank, (t, c) in enumerate(sorted_types, 1)
+    # EC2 비용 fields
+    cost_fields = [
+        f"*{d1_date}*\n`${ec2_d1:,.2f}`",
+        f"*{d2_date}*\n`${ec2_d2:,.2f}` _{_arrow(d)} {fmt_change(d, p)}_",
     ]
-    user_rows = [
-        [str(rank), _shorten_creator(c), f"${cost:,.2f}"]
+
+    # 리전 fields (2열 그리드, 10개씩 분할)
+    region_field_items = [f"*{r}*\n`${c:,.2f}`" for r, c in sorted_regions]
+    region_blocks = [
+        _fields_section(region_field_items[i:i + 10])
+        for i in range(0, max(len(region_field_items), 1), 10)
+    ]
+
+    # Top 5 타입 sections
+    type_blocks = [
+        _section(f"*{rank}. {t}* — `${c:,.2f}`")
+        for rank, (t, c) in enumerate(sorted_types, 1)
+    ] or [_section("_(데이터 없음)_")]
+
+    # Top 5 User sections
+    user_blocks = [
+        _section(f"*{rank}. {_shorten_creator(c)}* — `${cost:,.2f}`")
         for rank, (c, cost) in enumerate(top5_users, 1)
         if cost > 0
-    ] or [["(데이터 없음)", "", ""]]
+    ] or [_section("_(데이터 없음)_")]
 
     return [
         _header(f"EC2 Instance Report  |  {d1_date}  |  {ACCOUNT_NAME}"),
+        _section("*[ EC2 비용 ]*"),
+        _fields_section(cost_fields),
+        _section(f"*당월 누계* — `${ec2_mtd:,.2f}`"),
         _divider(),
-        *_table_section(
-            "*[ EC2 비용 ]*",
-            ["날짜", "비용", "변화"],
-            [
-                [str(d1_date), f"${ec2_d1:,.2f}", ""],
-                [str(d2_date), f"${ec2_d2:,.2f}", fmt_change(d, p)],
-                ["당월 누계",   f"${ec2_mtd:,.2f}", ""],
-            ],
-        ),
+        _section(f"*[ 비용이 발생한 활성 Region ({len(region_totals)}개) ]*"),
+        *region_blocks,
         _divider(),
-        *_table_section(
-            f"*[ 비용이 발생한 활성 Region ({len(region_totals)}개) ]*",
-            ["리전", "비용"],
-            region_rows,
-        ),
+        _section("*[ Top 5 인스턴스 타입 ]*"),
+        *type_blocks,
         _divider(),
-        *_table_section("*[ Top 5 인스턴스 타입 ]*", ["#", "타입", "비용"], type_rows),
-        _divider(),
-        *_table_section("*[ Top 5 IAM User (EC2 MTD) ]*", ["#", "사용자", "비용"], user_rows),
+        _section("*[ Top 5 IAM User (EC2 MTD) ]*"),
+        *user_blocks,
         _divider(),
         _context("전체 인스턴스 상세는 스레드에서 확인하세요."),
     ]
@@ -433,14 +444,15 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
     dm_targets = []
 
     for region, instances in sorted(ec2_data['instances'].items()):
-        region_blocks = [_section(f"*{_region_label(region)}*")]
+        region_blocks = [_header(_region_label(region))]
         region_blocks.extend(_format_region_instances_blocks(region, instances, creator_map, dm_targets, now))
 
-        slack.post_blocks(
-            region_blocks,
-            fallback_text=_region_label(region),
-            thread_ts=main2_ts,
-        )
+        for batch in _split_by_aggregate(region_blocks):
+            slack.post_blocks(
+                batch,
+                fallback_text=_region_label(region),
+                thread_ts=main2_ts,
+            )
 
     # Thread 2: 미사용 리소스
     stopped_instances = [
