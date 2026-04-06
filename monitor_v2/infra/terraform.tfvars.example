@@ -1,0 +1,20 @@
+# ── 필수 값 ─────────────────────────────────────────────────────────
+# 실제 값을 입력한 뒤 terraform.tfvars 로 복사해서 사용
+
+aws_region       = ""
+account_name     = ""
+
+slack_bot_token  = "xoxb-..."   # Slack Bot User OAuth Token
+slack_channel_id = "C..."       # 대상 채널 ID
+
+# ── CUR / Athena (선택) ──────────────────────────────────────────────
+# athena_output_location = "s3://your-bucket/athena-results/"
+# athena_database        = ""
+# athena_workgroup       = ""
+
+# ── Lambda 실행 설정 (선택) ──────────────────────────────────────────
+# lambda_timeout     = 900
+# lambda_memory_size = 512
+
+# ── 스케줄 (선택) ────────────────────────────────────────────────────
+# schedule_expression = "cron(5 13 * * ? *)"  # KST 22:05

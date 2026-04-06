@@ -49,6 +49,7 @@ PROJECT_STRUCTURE.md
 *.pem
 *.key
 credentials.json
+**/iam_to_slack.json
 
 # AWS/Cloud credentials
 ~/.aws/
@@ -59,3 +60,18 @@ credentials.json
 uv.lock
 __pypackages__/
 .uv/
+
+# Terraform 상태 & 캐시
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfplan
+
+# 빌드 산출물 (null_resource가 생성)
+**/.build/
+**/dist/
+
+# 실제 변수값 (민감 정보 포함)
+**/terraform.tfvars
+**/*.auto.tfvars
