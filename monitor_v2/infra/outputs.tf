@@ -18,14 +18,14 @@ output "lambda_role_arn" {
   value       = aws_iam_role.lambda_exec.arn
 }
 
-output "eventbridge_rule_name" {
-  description = "EventBridge 규칙 이름"
-  value       = aws_cloudwatch_event_rule.daily_trigger.name
-}
-
-output "eventbridge_rule_arn" {
-  description = "EventBridge 규칙 ARN"
-  value       = aws_cloudwatch_event_rule.daily_trigger.arn
+output "eventbridge_rule_names" {
+  description = "EventBridge 규칙 이름 목록 (4개 스케줄)"
+  value = {
+    morning_cost = aws_cloudwatch_event_rule.morning_cost.name
+    morning_ec2  = aws_cloudwatch_event_rule.morning_ec2.name
+    evening_cost = aws_cloudwatch_event_rule.evening_cost.name
+    evening_ec2  = aws_cloudwatch_event_rule.evening_ec2.name
+  }
 }
 
 output "log_group_name" {

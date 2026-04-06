@@ -1,7 +1,7 @@
 # ── Lambda 실행 역할 ─────────────────────────────────────────────────
 resource "aws_iam_role" "lambda_exec" {
   name        = "${local.function_name}-role"
-  description = "monitor_v2 Lambda 실행 역할"
+  description = "monitor_v2 Lambda execution role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -28,7 +28,7 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_exec" {
 # 커스텀 인라인 정책: 비즈니스 로직 권한
 resource "aws_iam_policy" "monitor_v2" {
   name        = "${local.function_name}-policy"
-  description = "monitor_v2가 필요한 AWS 서비스 조회 권한"
+  description = "monitor_v2 required AWS service permissions"
 
   policy = jsonencode({
     Version = "2012-10-17"

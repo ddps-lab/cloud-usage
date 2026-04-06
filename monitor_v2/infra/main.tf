@@ -50,16 +50,14 @@ resource "null_resource" "build_package" {
       rm -rf '${local.build_dir}'
       mkdir -p '${local.build_dir}'
 
-      # Python 의존성 설치 (Lambda 런타임 타겟)
+      # Python 의존성 설치 (slack-sdk는 순수 Python이므로 플랫폼 플래그 불필요)
       pip install slack-sdk \
         --target '${local.build_dir}' \
-        --quiet \
-        --platform manylinux2014_x86_64 \
-        --only-binary=:all: \
-        --python-version 3.12
+        --quiet
 
-      # monitor_v2 패키지 복사 (테스트 파일 제외)
+      # monitor_v2 패키지 복사 (infra/, 테스트 파일, 캐시 제외)
       cp -r '${local.project_root}/monitor_v2' '${local.build_dir}/monitor_v2'
+      rm -rf '${local.build_dir}/monitor_v2/infra'
       find '${local.build_dir}/monitor_v2' -name 'test_*.py' -delete
       find '${local.build_dir}/monitor_v2' -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     EOT
@@ -77,12 +75,11 @@ data "archive_file" "lambda_zip" {
 # ── Lambda 함수 ──────────────────────────────────────────────────────
 resource "aws_lambda_function" "monitor_v2" {
   function_name = local.function_name
-  description   = "monitor_v2: 일일 AWS 비용 + EC2 현황 → Slack"
+  description   = "monitor_v2: daily AWS cost + EC2 report to Slack"
 
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  # monitor_v2/__init__.py 가 있으므로 패키지 경로로 지정
   handler = "monitor_v2.lambda_handler.lambda_handler"
   runtime = "python3.12"
 
@@ -110,25 +107,103 @@ resource "aws_lambda_function" "monitor_v2" {
 }
 
 # ── EventBridge (CloudWatch Events) ──────────────────────────────────
-resource "aws_cloudwatch_event_rule" "daily_trigger" {
-  name                = "${local.function_name}-trigger"
-  description         = "monitor_v2 일일 실행 트리거 (KST 22:00)"
-  schedule_expression = var.schedule_expression
+#
+# 스케줄 4개 (KST 기준, EventBridge는 UTC 사용)
+#   KST 08:00 = UTC 23:00 전날  → cost  전날 데이터
+#   KST 08:10 = UTC 23:10 전날  → ec2   전날 데이터
+#   KST 22:00 = UTC 13:00       → cost  당일 데이터
+#   KST 22:10 = UTC 13:10       → ec2   당일 데이터
+
+# ── KST 08:00 cost (전날) ─────────────────────────────────────────────
+resource "aws_cloudwatch_event_rule" "morning_cost" {
+  name                = "${local.function_name}-morning-cost"
+  description         = "KST 08:00 cost report (yesterday)"
+  schedule_expression = "cron(0 23 * * ? *)"
   state               = "ENABLED"
 }
 
-resource "aws_cloudwatch_event_target" "lambda_target" {
-  rule      = aws_cloudwatch_event_rule.daily_trigger.name
-  target_id = "monitor-v2-lambda"
+resource "aws_cloudwatch_event_target" "morning_cost" {
+  rule      = aws_cloudwatch_event_rule.morning_cost.name
+  target_id = "morning-cost"
   arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "cost", date_mode = "yesterday" })
 }
 
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
+resource "aws_lambda_permission" "morning_cost" {
+  statement_id  = "AllowEventBridgeMorningCost"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.monitor_v2.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily_trigger.arn
+  source_arn    = aws_cloudwatch_event_rule.morning_cost.arn
+}
+
+# ── KST 08:10 ec2 (전날) ──────────────────────────────────────────────
+resource "aws_cloudwatch_event_rule" "morning_ec2" {
+  name                = "${local.function_name}-morning-ec2"
+  description         = "KST 08:10 ec2 report (yesterday)"
+  schedule_expression = "cron(10 23 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "morning_ec2" {
+  rule      = aws_cloudwatch_event_rule.morning_ec2.name
+  target_id = "morning-ec2"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "ec2", date_mode = "yesterday" })
+}
+
+resource "aws_lambda_permission" "morning_ec2" {
+  statement_id  = "AllowEventBridgeMorningEc2"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.morning_ec2.arn
+}
+
+# ── KST 22:00 cost (당일) ─────────────────────────────────────────────
+resource "aws_cloudwatch_event_rule" "evening_cost" {
+  name                = "${local.function_name}-evening-cost"
+  description         = "KST 22:00 cost report (today)"
+  schedule_expression = "cron(0 13 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "evening_cost" {
+  rule      = aws_cloudwatch_event_rule.evening_cost.name
+  target_id = "evening-cost"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "cost", date_mode = "today" })
+}
+
+resource "aws_lambda_permission" "evening_cost" {
+  statement_id  = "AllowEventBridgeEveningCost"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.evening_cost.arn
+}
+
+# ── KST 22:10 ec2 (당일) ──────────────────────────────────────────────
+resource "aws_cloudwatch_event_rule" "evening_ec2" {
+  name                = "${local.function_name}-evening-ec2"
+  description         = "KST 22:10 ec2 report (today)"
+  schedule_expression = "cron(10 13 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "evening_ec2" {
+  rule      = aws_cloudwatch_event_rule.evening_ec2.name
+  target_id = "evening-ec2"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "ec2", date_mode = "today" })
+}
+
+resource "aws_lambda_permission" "evening_ec2" {
+  statement_id  = "AllowEventBridgeEveningEc2"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.evening_ec2.arn
 }
 
 # ── CloudWatch Logs ───────────────────────────────────────────────────

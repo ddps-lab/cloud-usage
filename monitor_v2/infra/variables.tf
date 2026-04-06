@@ -54,10 +54,3 @@ variable "lambda_memory_size" {
   default     = 512
 }
 
-# ── EventBridge 스케줄 ──────────────────────────────────────────────
-
-variable "schedule_expression" {
-  description = "EventBridge cron 표현식. 기본값은 KST 22:05 (= UTC 13:05)"
-  type        = string
-  default     = "cron(5 13 * * ? *)"
-}
