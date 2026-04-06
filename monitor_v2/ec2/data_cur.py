@@ -16,7 +16,7 @@ Athena 쿼리:
 """
 
 import boto3
-from datetime import date
+from datetime import date, timedelta
 import logging
 
 from .data import (
@@ -105,6 +105,39 @@ def collect_ec2_cost_by_type_mtd_cur(athena, d1_date: date) -> dict:
     return result
 
 
+def collect_spot_cost_cur(athena, d1_date: date) -> tuple:
+    """
+    D-1 / D-2 / MTD Spot EC2 비용 합산 (Athena CUR).
+
+    Spot 인스턴스는 line_item_usage_type에 'SpotUsage'가 포함된 행으로 식별한다.
+
+    Returns:
+        (spot_d1: float, spot_d2: float, spot_mtd: float)
+    """
+    d2_date   = d1_date - timedelta(days=1)
+    mtd_start = d1_date.replace(day=1)
+
+    def _query_spot(start: date, end: date) -> float:
+        y, m = _partition(end)
+        sql = f"""
+            SELECT SUM(line_item_unblended_cost) AS spot_cost
+            FROM hyu_ddps_logs.cur_logs
+            WHERE year  = '{y}'
+              AND month = '{m}'
+              AND DATE(line_item_usage_start_date)
+                  BETWEEN DATE('{start}') AND DATE('{end}')
+              AND line_item_usage_type LIKE '%SpotUsage%'
+        """
+        rows = _run_query(athena, sql)
+        return float(rows[0].get('spot_cost', 0) or 0) if rows else 0.0
+
+    spot_d1  = _query_spot(d1_date, d1_date)
+    spot_d2  = _query_spot(d2_date, d2_date)
+    spot_mtd = _query_spot(mtd_start, d1_date) if mtd_start < d1_date else 0.0
+
+    return spot_d1, spot_d2, spot_mtd
+
+
 def collect_all(regions: list, account_id: str, d1_date: date) -> dict:
     """
     Main 2 + 스레드에 필요한 EC2 데이터를 수집한다.
@@ -124,9 +157,13 @@ def collect_all(regions: list, account_id: str, d1_date: date) -> dict:
             'unused_snapshots': list,
             'type_cost':        dict,  # {itype: {region: float}} D-1
             'type_cost_mtd':    dict,  # {itype: {region: float}} MTD
+            'spot_d1':          float, # Spot 당일 비용
+            'spot_d2':          float, # Spot 전날 비용
+            'spot_mtd':         float, # Spot 당월 누계 비용
         }
     """
     athena = boto3.client('athena', region_name='ap-northeast-2')
+    spot_d1, spot_d2, spot_mtd = collect_spot_cost_cur(athena, d1_date)
 
     return {
         'instances':        collect_instances(regions),
@@ -134,4 +171,7 @@ def collect_all(regions: list, account_id: str, d1_date: date) -> dict:
         'unused_snapshots': collect_unused_snapshots(regions, account_id),
         'type_cost':        collect_ec2_cost_by_type_cur(athena, d1_date),
         'type_cost_mtd':    collect_ec2_cost_by_type_mtd_cur(athena, d1_date),
+        'spot_d1':          spot_d1,
+        'spot_d2':          spot_d2,
+        'spot_mtd':         spot_mtd,
     }

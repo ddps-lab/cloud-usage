@@ -108,6 +108,9 @@ def _build_main2(
     ec2_d2: float,
     ec2_mtd: float,
     ec2_user_mtd: dict,
+    spot_d1: float = 0.0,
+    spot_d2: float = 0.0,
+    spot_mtd: float = 0.0,
 ) -> list:
     """
     비용이 발생한 리전만 표시한다 (stopped 전용 리전 = $0, 미포함).
@@ -116,6 +119,7 @@ def _build_main2(
     """
     d2_date = d1_date - timedelta(days=1)
     d, p    = calc_change(ec2_d1, ec2_d2)
+    sd, sp  = calc_change(spot_d1, spot_d2)
 
     # 비용이 발생한 리전만 (D-1 type_cost 기준)
     region_totals: dict = {}
@@ -130,6 +134,12 @@ def _build_main2(
     cost_fields = [
         f"*{d1_date}*\n`${ec2_d1:,.2f}`",
         f"*{d2_date}*\n`${ec2_d2:,.2f}` _{_arrow(d)} {fmt_change(d, p)}_",
+    ]
+
+    # Spot 비용 fields
+    spot_fields = [
+        f"*{d1_date}*\n`${spot_d1:,.2f}`",
+        f"*{d2_date}*\n`${spot_d2:,.2f}` _{_arrow(sd)} {fmt_change(sd, sp)}_",
     ]
 
     # 리전 fields (2열 그리드, 10개씩 분할)
@@ -151,6 +161,10 @@ def _build_main2(
         _section("*[ EC2 비용 ]*"),
         _fields_section(cost_fields),
         _section(f"*당월 누계* — `${ec2_mtd:,.2f}`"),
+        _divider(),
+        _section("*[ Spot Instance 비용 ]*"),
+        _fields_section(spot_fields),
+        _section(f"*당월 누계* — `${spot_mtd:,.2f}`"),
         _divider(),
         _section(f"*[ 비용이 발생한 활성 Region ({len(region_totals)}개) ]*"),
         *region_blocks,
@@ -422,6 +436,9 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
     )
     ec2_user_mtd      = _ec2_by_user(cost_data.get('by_creator_mtd', {}))
     ec2_type_cost_mtd = ec2_data.get('type_cost_mtd', {})
+    spot_d1           = ec2_data.get('spot_d1', 0.0)
+    spot_d2           = ec2_data.get('spot_d2', 0.0)
+    spot_mtd          = ec2_data.get('spot_mtd', 0.0)
 
     # Main 2
     main2_ts = slack.post_blocks(
@@ -431,6 +448,7 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
             ec2_type_cost_mtd,
             ec2_d1, ec2_d2, ec2_mtd,
             ec2_user_mtd,
+            spot_d1, spot_d2, spot_mtd,
         ),
         fallback_text=f"EC2 Instance Report {d1_date} / {ACCOUNT_NAME}",
     )
