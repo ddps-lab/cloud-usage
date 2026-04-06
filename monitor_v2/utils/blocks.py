@@ -17,7 +17,8 @@ from slack_sdk.models.blocks.basic_components import MarkdownTextObject, PlainTe
 SEP = "─" * 60
 
 EC2_SERVICES = {
-    'Amazon Elastic Compute Cloud - Compute',
+    'Amazon Elastic Compute Cloud - Compute',  # CE API 서비스명
+    'Amazon Elastic Compute Cloud',            # CUR product_product_name
     'Amazon EC2',
     'EC2 - Other',
 }

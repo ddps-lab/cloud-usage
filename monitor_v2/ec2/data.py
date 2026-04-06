@@ -311,6 +311,38 @@ def collect_ec2_cost_by_type(ce, period: dict) -> dict:
     return result
 
 
+def collect_ec2_cost_by_type_mtd(ce, period_mtd: dict) -> dict:
+    """
+    MTD 기간 EC2 인스턴스 타입 + 리전별 비용.
+
+    Returns:
+        {instance_type: {region: float}}
+    """
+    if period_mtd['Start'] >= period_mtd['End']:
+        return {}
+    resp = ce.get_cost_and_usage(
+        TimePeriod=period_mtd,
+        Granularity='MONTHLY',
+        Metrics=['UnblendedCost'],
+        GroupBy=[
+            {'Type': 'DIMENSION', 'Key': 'INSTANCE_TYPE'},
+            {'Type': 'DIMENSION', 'Key': 'REGION'},
+        ],
+    )
+    result = {}
+    for group in resp.get('ResultsByTime', [{}])[0].get('Groups', []):
+        itype  = group['Keys'][0]
+        if itype == 'NoInstanceType':
+            continue
+        region = group['Keys'][1]
+        amount = float(group['Metrics']['UnblendedCost']['Amount'])
+        if amount <= 0:
+            continue
+        result.setdefault(itype, {})
+        result[itype][region] = result[itype].get(region, 0.0) + amount
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 일괄 수집
 # ---------------------------------------------------------------------------
@@ -330,12 +362,20 @@ def collect_all(regions: list, account_id: str, ce, period_d1: dict) -> dict:
             'instances':        dict,  # {region: [inst, ...]}
             'unused_ebs':       list,
             'unused_snapshots': list,
-            'type_cost':        dict,  # {itype: {region: float}}
+            'type_cost':        dict,  # {itype: {region: float}} D-1
+            'type_cost_mtd':    dict,  # {itype: {region: float}} MTD
         }
     """
+    from datetime import date as _date
+    d1_date    = _date.fromisoformat(period_d1['Start'])
+    period_mtd = {
+        'Start': d1_date.replace(day=1).strftime('%Y-%m-%d'),
+        'End':   period_d1['End'],
+    }
     return {
         'instances':        collect_instances(regions),
         'unused_ebs':       collect_unused_ebs(regions),
         'unused_snapshots': collect_unused_snapshots(regions, account_id),
         'type_cost':        collect_ec2_cost_by_type(ce, period_d1),
+        'type_cost_mtd':    collect_ec2_cost_by_type_mtd(ce, period_mtd),
     }
