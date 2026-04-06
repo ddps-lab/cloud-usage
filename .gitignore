@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.egg-info/  # Python package metadata (auto-generated)
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude Code workspace (documentation and settings)
+# These are collaboration/documentation files, not code
+CLAUDE.md
+.claude/
+memory/
+ARCHITECTURE.md
+PROJECT_STRUCTURE.md
+
+# Environment variables (sensitive)
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+**/iam_to_slack.json
+
+# AWS/Cloud credentials
+~/.aws/
+~/.gcp/
+
+# uv (UV package manager)
+.venv/
+uv.lock
+__pypackages__/
+.uv/
+
+# Terraform 상태 & 캐시
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/*.tfplan
+
+# 빌드 산출물 (null_resource가 생성)
+**/.build/
+**/dist/
+
+# 실제 변수값 (민감 정보 포함)
+**/terraform.tfvars
+**/*.auto.tfvars
