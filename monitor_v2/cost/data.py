@@ -13,7 +13,7 @@ Cost Explorer 데이터 수집 모듈.
 from pprint import pprint
 
 import boto3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from calendar import monthrange
 import logging
 
@@ -181,12 +181,13 @@ def fetch_mtd_by_service_and_region(ce, period: dict) -> dict:
 
 
 
-def fetch_cost_forecast(ce, today_kst: date) -> float:
+def fetch_cost_forecast(ce) -> float:
     """
     오늘부터 이달 말일까지 예상 비용 (UNBLENDED_COST, MONTHLY 예측).
 
     CE 예측 API가 실패하면(데이터 부족 등) 0.0 반환.
     """
+    today_kst = datetime.now(timezone(timedelta(hours=9))).date()
     last_day = monthrange(today_kst.year, today_kst.month)[1]
     end_date = date(today_kst.year, today_kst.month, last_day) + timedelta(days=1)
 
@@ -278,5 +279,5 @@ def collect_all(today_kst: date) -> dict:
         'by_region':      fetch_daily_by_service_and_region(ce, period_d1),
         'by_region_mtd':  fetch_mtd_by_service_and_region(ce, period_mtd_this),
         'mtd_this':       fetch_mtd_total(ce, period_mtd_this),
-        'forecast':       fetch_cost_forecast(ce, today_kst),
+        'forecast':       fetch_cost_forecast(ce),
     }

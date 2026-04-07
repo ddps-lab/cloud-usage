@@ -355,7 +355,7 @@ def collect_all(today_kst: date) -> dict:
     athena = boto3.client('athena', region_name='ap-northeast-2')
     ce     = boto3.client('ce',     region_name='us-east-1')
 
-    d1_date = today_kst - timedelta(days=1)
+    d1_date = today_kst #- timedelta(days=1)
     d2_date = d1_date   - timedelta(days=1)
 
     return {
@@ -367,5 +367,5 @@ def collect_all(today_kst: date) -> dict:
         'by_region':      fetch_daily_by_service_and_region_cur(athena, d1_date),
         'by_region_mtd':  fetch_mtd_by_service_and_region_cur(athena, d1_date),
         'mtd_this':       fetch_mtd_total_cur(athena, d1_date),
-        'forecast':       fetch_cost_forecast(ce, today_kst),
+        'forecast':       fetch_cost_forecast(ce),
     }

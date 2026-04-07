@@ -30,9 +30,9 @@ uv sync
 
 | 키 | 필수 | 설명 |
 |----|------|------|
-| `ATHENA_OUTPUT_LOCATION` | ✅ | Athena 쿼리 결과 저장 S3 URI (예: `s3://bucket/results/`) |
-| `ATHENA_DATABASE` | ⬜ | Athena 데이터베이스명 (기본: `hyu_ddps_logs`) |
-| `ATHENA_WORKGROUP` | ⬜ | Athena 워크그룹 (기본: `primary`) |
+| `ATHENA_OUTPUT_LOCATION` | ✅ | Athena 쿼리 결과 저장 S3 URI |
+| `ATHENA_DATABASE` | ⬜ | Athena 데이터베이스명 |
+| `ATHENA_WORKGROUP` | ⬜ | Athena 워크그룹 |
 
 > `ATHENA_OUTPUT_LOCATION`은 CUR 데이터 위치가 아닌 Athena **쿼리 결과**가 저장되는 S3 경로다.
 > AWS 콘솔 → Athena → Settings → Query result location 값과 동일.
