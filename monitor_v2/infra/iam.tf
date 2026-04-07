@@ -97,6 +97,7 @@ resource "aws_iam_policy" "monitor_v2" {
           "glue:GetDatabase",
           "glue:GetTable",
           "glue:GetPartitions",
+          "glue:GetPartition",
         ]
         Resource = "*"
       },
