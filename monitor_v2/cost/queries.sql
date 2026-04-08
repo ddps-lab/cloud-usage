@@ -40,7 +40,7 @@ WHERE year  = '2026'
   AND month = '4'
   AND DATE(line_item_usage_start_date) = DATE('2026-04-05')
 GROUP BY product_product_name
-HAVING SUM(line_item_unblended_cost) > 0
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY cost DESC;
 
 -- -----------------------------------------------------------------------------
@@ -58,7 +58,7 @@ WHERE year  = '2026'
   AND month = '4'
   AND DATE(line_item_usage_start_date) = DATE('2026-04-04')
 GROUP BY product_product_name
-HAVING SUM(line_item_unblended_cost) > 0
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY cost DESC;
 
 
@@ -68,16 +68,45 @@ ORDER BY cost DESC;
 --     data.py: fetch_daily_by_service_and_creator(ce, period_d1)  → by_creator
 --     결과:  {service: {creator_label: float}}
 --
---     CE TAG 값 'aws:createdBy$IAMUser:arn:alice' → '$' 뒤가 실제 creator
---     CUR는 resource_tags_aws_created_by 에 그 값이 그대로 저장됨
---     미태깅 = NULL 또는 빈 문자열 → 'aws:createdBy 태그 없음' 처리
+--     Creator 분류 우선순위:
+--     1. Tax 항목 → [Tax] {service}
+--     2. 공통 서비스 → [공통] prefix
+--     3. aws:createdBy 태그 → username (SPLIT_PART로 추출)
+--     4. custom 태그들 (username, requester, project, ...) → [prefix] value
+--     5. Usage type 있음 → {service} - {usage_type}
+--     6. 그 외 → {service} - 기타
 -- -----------------------------------------------------------------------------
 SELECT
     product_product_name                                            AS service,
-    COALESCE(
-        NULLIF(resource_tags_aws_created_by, ''),
-        'aws:createdBy 태그 없음'
-    )                                                               AS creator,
+    CASE
+        WHEN line_item_line_item_type = 'Tax'
+            THEN CONCAT('[Tax] ', product_product_name)
+        WHEN product_product_name = 'AWS Data Transfer'
+            THEN '[공통] Data Transfer'
+        WHEN product_product_name = 'AWS Cost Explorer'
+            THEN '[공통] Cost Explorer'
+        WHEN product_product_name = 'AWS Support [Business]'
+            THEN '[공통] Support'
+        WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+            THEN CONCAT('[username] ', resource_tags_user_username)
+        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+            THEN CONCAT('[requester] ', resource_tags_user_requester)
+        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+            THEN CONCAT('[project] ', resource_tags_user_project)
+        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+        WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+            THEN CONCAT('[name] ', resource_tags_user_name)
+        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+            THEN CONCAT('[environment] ', resource_tags_user_environment)
+        WHEN line_item_line_item_type = 'Usage'
+            THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+        ELSE CONCAT(product_product_name, ' - 기타')
+    END                                                             AS creator,
     SUM(line_item_unblended_cost)                                   AS cost
 FROM hyu_ddps_logs.cur_logs
 WHERE year  = '{year}'
@@ -85,8 +114,36 @@ WHERE year  = '{year}'
   AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
 GROUP BY
     product_product_name,
-    COALESCE(NULLIF(resource_tags_aws_created_by, ''), 'aws:createdBy 태그 없음')
-HAVING SUM(line_item_unblended_cost) > 0
+    CASE
+        WHEN line_item_line_item_type = 'Tax'
+            THEN CONCAT('[Tax] ', product_product_name)
+        WHEN product_product_name = 'AWS Data Transfer'
+            THEN '[공통] Data Transfer'
+        WHEN product_product_name = 'AWS Cost Explorer'
+            THEN '[공통] Cost Explorer'
+        WHEN product_product_name = 'AWS Support [Business]'
+            THEN '[공통] Support'
+        WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+            THEN CONCAT('[username] ', resource_tags_user_username)
+        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+            THEN CONCAT('[requester] ', resource_tags_user_requester)
+        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+            THEN CONCAT('[project] ', resource_tags_user_project)
+        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+        WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+            THEN CONCAT('[name] ', resource_tags_user_name)
+        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+            THEN CONCAT('[environment] ', resource_tags_user_environment)
+        WHEN line_item_line_item_type = 'Usage'
+            THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+        ELSE CONCAT(product_product_name, ' - 기타')
+    END
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY service, cost DESC;
 
 
@@ -112,7 +169,7 @@ WHERE year  = '2026'
 GROUP BY
     product_product_name,
     COALESCE(NULLIF(resource_tags_aws_created_by, ''), 'aws:createdBy 태그 없음')
-HAVING SUM(line_item_unblended_cost) > 0
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY cost, service DESC;
 
 
@@ -125,22 +182,77 @@ ORDER BY cost, service DESC;
 --
 --     MTD 범위: {mtd_start} ~ {d1_date} (inclusive)
 --     당월 1일에 실행된 경우 범위가 비므로 Python에서 {} 반환 (이 쿼리 미실행)
+--
+--     Creator 분류는 Q3과 동일한 우선순위 적용
 -- -----------------------------------------------------------------------------
 SELECT
     product_product_name                                            AS service,
-    COALESCE(
-        NULLIF(resource_tags_aws_created_by, ''),
-        'aws:createdBy 태그 없음'
-    )                                                               AS creator,
+    CASE
+        WHEN line_item_line_item_type = 'Tax'
+            THEN CONCAT('[Tax] ', product_product_name)
+        WHEN product_product_name = 'AWS Data Transfer'
+            THEN '[공통] Data Transfer'
+        WHEN product_product_name = 'AWS Cost Explorer'
+            THEN '[공통] Cost Explorer'
+        WHEN product_product_name = 'AWS Support [Business]'
+            THEN '[공통] Support'
+        WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+            THEN CONCAT('[username] ', resource_tags_user_username)
+        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+            THEN CONCAT('[requester] ', resource_tags_user_requester)
+        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+            THEN CONCAT('[project] ', resource_tags_user_project)
+        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+        WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+            THEN CONCAT('[name] ', resource_tags_user_name)
+        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+            THEN CONCAT('[environment] ', resource_tags_user_environment)
+        WHEN line_item_line_item_type = 'Usage'
+            THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+        ELSE CONCAT(product_product_name, ' - 기타')
+    END                                                             AS creator,
     SUM(line_item_unblended_cost)                                   AS cost
 FROM hyu_ddps_logs.cur_logs
-WHERE year  = '2026'
-  AND month = '4'
-  AND DATE(line_item_usage_start_date) BETWEEN DATE('2026-04-01') AND DATE('2026-04-05')
+WHERE year  = '{year}'
+  AND month = '{month}'
+  AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
 GROUP BY
     product_product_name,
-    COALESCE(NULLIF(resource_tags_aws_created_by, ''), 'aws:createdBy 태그 없음')
-HAVING SUM(line_item_unblended_cost) > 0
+    CASE
+        WHEN line_item_line_item_type = 'Tax'
+            THEN CONCAT('[Tax] ', product_product_name)
+        WHEN product_product_name = 'AWS Data Transfer'
+            THEN '[공통] Data Transfer'
+        WHEN product_product_name = 'AWS Cost Explorer'
+            THEN '[공통] Cost Explorer'
+        WHEN product_product_name = 'AWS Support [Business]'
+            THEN '[공통] Support'
+        WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+            THEN CONCAT('[username] ', resource_tags_user_username)
+        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+            THEN CONCAT('[requester] ', resource_tags_user_requester)
+        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+            THEN CONCAT('[project] ', resource_tags_user_project)
+        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+        WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+            THEN CONCAT('[name] ', resource_tags_user_name)
+        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+            THEN CONCAT('[environment] ', resource_tags_user_environment)
+        WHEN line_item_line_item_type = 'Usage'
+            THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+        ELSE CONCAT(product_product_name, ' - 기타')
+    END
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY service, cost DESC;
 
 
@@ -161,7 +273,7 @@ WHERE year  = '2026'
 GROUP BY
     product_product_name,
     COALESCE(NULLIF(product_region_code, ''), 'global')
-HAVING SUM(line_item_unblended_cost) > 0
+HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY cost DESC;
 
 
