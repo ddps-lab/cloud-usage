@@ -151,6 +151,8 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     Q3 해당.
     D-1 서비스 + aws:createdBy 태그별 비용.
 
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
+
     Returns:
         {service: {creator: float}}
     """
@@ -234,8 +236,10 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         creator = r.get('creator', '')
         cost    = float(r.get('cost', 0) or 0)
         if creator:  # SQL에서 이미 분류된 creator 사용
+            # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+            cost_with_tax = cost * 1.10
             result.setdefault(svc, {})
-            result[svc][creator] = result[svc].get(creator, 0.0) + cost
+            result[svc][creator] = result[svc].get(creator, 0.0) + cost_with_tax
     return result
 
 
@@ -279,6 +283,8 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     Q5 해당.
     MTD 서비스 + 태그 기반 creator 분류 (세분화, Tax 제외).
     당월 1일 실행 시(범위 없음) {} 반환.
+
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
 
     Creator 분류는 fetch_daily_by_service_and_creator_cur()와 동일.
 
@@ -369,8 +375,10 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         creator = r.get('creator', '')
         cost    = float(r.get('cost', 0) or 0)
         if creator:  # SQL에서 이미 분류된 creator 사용
+            # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+            cost_with_tax = cost * 1.10
             result.setdefault(svc, {})
-            result[svc][creator] = result[svc].get(creator, 0.0) + cost
+            result[svc][creator] = result[svc].get(creator, 0.0) + cost_with_tax
     return result
 
 

@@ -75,6 +75,8 @@ def fetch_daily_by_service_and_creator(ce, period: dict) -> dict:
 
     GroupBy 2개 제한 준수 (DIMENSION + TAG).
 
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
+
     Returns:
         {service: {creator_label: float}}
         미태깅 리소스의 creator_label = '(태그 없음 / 공용)'
@@ -95,8 +97,10 @@ def fetch_daily_by_service_and_creator(ce, period: dict) -> dict:
         creator = raw_tag.split('$', 1)[1] if '$' in raw_tag else raw_tag
         creator = creator or 'aws:createdBy 태그 없음'
         amount  = float(group['Metrics']['UnblendedCost']['Amount'])
+        # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+        amount_with_tax = amount * 1.10
         result.setdefault(service, {})
-        result[service][creator] = result[service].get(creator, 0.0) + amount
+        result[service][creator] = result[service].get(creator, 0.0) + amount_with_tax
     return result
 
 
@@ -130,6 +134,8 @@ def fetch_mtd_by_service_and_creator(ce, period: dict) -> dict:
     """
     MTD: SERVICE + aws:createdBy → {service: {creator: float}}.
     기간이 비면(당월 1일 실행) {} 반환.
+
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
     """
     if period['Start'] >= period['End']:
         return {}
@@ -149,8 +155,10 @@ def fetch_mtd_by_service_and_creator(ce, period: dict) -> dict:
         creator = raw_tag.split('$', 1)[1] if '$' in raw_tag else raw_tag
         creator = creator or 'aws:createdBy 태그 없음'
         amount  = float(group['Metrics']['UnblendedCost']['Amount'])
+        # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+        amount_with_tax = amount * 1.10
         result.setdefault(service, {})
-        result[service][creator] = result[service].get(creator, 0.0) + amount
+        result[service][creator] = result[service].get(creator, 0.0) + amount_with_tax
     return result
 
 
