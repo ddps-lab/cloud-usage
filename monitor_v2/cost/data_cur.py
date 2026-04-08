@@ -192,6 +192,7 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type != 'Tax'
         GROUP BY
             product_product_name,
             CASE
@@ -276,7 +277,7 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
 def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     """
     Q5 해당.
-    MTD 서비스 + 태그 기반 creator 분류 (세분화).
+    MTD 서비스 + 태그 기반 creator 분류 (세분화, Tax 제외).
     당월 1일 실행 시(범위 없음) {} 반환.
 
     Creator 분류는 fetch_daily_by_service_and_creator_cur()와 동일.
@@ -326,6 +327,7 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type != 'Tax'
         GROUP BY
             product_product_name,
             CASE

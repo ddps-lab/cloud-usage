@@ -68,19 +68,17 @@ ORDER BY cost DESC;
 --     data.py: fetch_daily_by_service_and_creator(ce, period_d1)  → by_creator
 --     결과:  {service: {creator_label: float}}
 --
---     Creator 분류 우선순위:
---     1. Tax 항목 → [Tax] {service}
---     2. 공통 서비스 → [공통] prefix
---     3. aws:createdBy 태그 → username (SPLIT_PART로 추출)
---     4. custom 태그들 (username, requester, project, ...) → [prefix] value
---     5. Usage type 있음 → {service} - {usage_type}
---     6. 그 외 → {service} - 기타
+--     Creator 분류 우선순위 (Tax 제외):
+--     1. 공통 서비스 → [공통] prefix
+--     2. aws:createdBy 태그 → username (SPLIT_PART로 추출)
+--     3. custom 태그들 (username, requester, project, ...) → [prefix] value
+--     4. Usage type 있음 → {service} - {usage_type}
+--     5. 그 외 → {service} - 기타
+-- ※ Tax 항목은 IAM User별 집계 대상이 아니므로 제외 (WHERE line_item_line_item_type != 'Tax')
 -- -----------------------------------------------------------------------------
 SELECT
     product_product_name                                            AS service,
     CASE
-        WHEN line_item_line_item_type = 'Tax'
-            THEN CONCAT('[Tax] ', product_product_name)
         WHEN product_product_name = 'AWS Data Transfer'
             THEN '[공통] Data Transfer'
         WHEN product_product_name = 'AWS Cost Explorer'
@@ -112,11 +110,10 @@ FROM hyu_ddps_logs.cur_logs
 WHERE year  = '{year}'
   AND month = '{month}'
   AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+  AND line_item_line_item_type != 'Tax'
 GROUP BY
     product_product_name,
     CASE
-        WHEN line_item_line_item_type = 'Tax'
-            THEN CONCAT('[Tax] ', product_product_name)
         WHEN product_product_name = 'AWS Data Transfer'
             THEN '[공통] Data Transfer'
         WHEN product_product_name = 'AWS Cost Explorer'
@@ -183,13 +180,12 @@ ORDER BY cost, service DESC;
 --     MTD 범위: {mtd_start} ~ {d1_date} (inclusive)
 --     당월 1일에 실행된 경우 범위가 비므로 Python에서 {} 반환 (이 쿼리 미실행)
 --
---     Creator 분류는 Q3과 동일한 우선순위 적용
+--     Creator 분류는 Q3과 동일한 우선순위 적용 (Tax 제외)
+-- ※ Tax 항목은 IAM User별 집계 대상이 아니므로 제외
 -- -----------------------------------------------------------------------------
 SELECT
     product_product_name                                            AS service,
     CASE
-        WHEN line_item_line_item_type = 'Tax'
-            THEN CONCAT('[Tax] ', product_product_name)
         WHEN product_product_name = 'AWS Data Transfer'
             THEN '[공통] Data Transfer'
         WHEN product_product_name = 'AWS Cost Explorer'
@@ -221,11 +217,10 @@ FROM hyu_ddps_logs.cur_logs
 WHERE year  = '{year}'
   AND month = '{month}'
   AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+  AND line_item_line_item_type != 'Tax'
 GROUP BY
     product_product_name,
     CASE
-        WHEN line_item_line_item_type = 'Tax'
-            THEN CONCAT('[Tax] ', product_product_name)
         WHEN product_product_name = 'AWS Data Transfer'
             THEN '[공통] Data Transfer'
         WHEN product_product_name = 'AWS Cost Explorer'
