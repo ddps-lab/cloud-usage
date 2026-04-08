@@ -178,7 +178,7 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
                     THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN CONCAT('[name] ', resource_tags_user_name)
+                    THEN resource_tags_user_name
                 WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
                     THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
                 WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
@@ -215,7 +215,7 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
                     THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN CONCAT('[name] ', resource_tags_user_name)
+                    THEN resource_tags_user_name
                 WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
                     THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
                 WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
@@ -312,7 +312,7 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
                     THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN CONCAT('[name] ', resource_tags_user_name)
+                    THEN resource_tags_user_name
                 WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
                     THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
                 WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
@@ -350,7 +350,7 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
                     THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN CONCAT('[name] ', resource_tags_user_name)
+                    THEN resource_tags_user_name
                 WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
                     THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
                 WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
