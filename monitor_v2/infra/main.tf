@@ -175,7 +175,7 @@ resource "aws_cloudwatch_event_target" "morning_analysis" {
   rule      = aws_cloudwatch_event_rule.morning_analysis.name
   target_id = "morning-analysis"
   arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "analysis", date_mode = "yesterday" })
+  input     = jsonencode({ report_type = "analysis", date_mode = "today" })
 }
 
 resource "aws_lambda_permission" "morning_analysis" {
