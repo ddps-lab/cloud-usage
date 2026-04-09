@@ -52,7 +52,7 @@ def collect_ec2_cost_by_type_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_instance_type,
             COALESCE(NULLIF(product_region_code, ''), 'global')
-        HAVING SUM(line_item_unblended_cost) > 0
+        HAVING SUM(line_item_unblended_cost) > 0.01
         ORDER BY cost DESC
     """
     rows   = _run_query(athena, sql)
@@ -91,7 +91,7 @@ def collect_ec2_cost_by_type_mtd_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_instance_type,
             COALESCE(NULLIF(product_region_code, ''), 'global')
-        HAVING SUM(line_item_unblended_cost) > 0
+        HAVING SUM(line_item_unblended_cost) > 0.01
         ORDER BY cost DESC
     """
     rows   = _run_query(athena, sql)

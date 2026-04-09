@@ -135,7 +135,7 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
         GROUP BY product_product_name
-        HAVING SUM(line_item_unblended_cost) > 0
+        HAVING SUM(line_item_unblended_cost) > 0.01
         ORDER BY cost DESC
     """
     rows = _run_query(athena, sql)
@@ -151,6 +151,8 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     Q3 해당.
     D-1 서비스 + aws:createdBy 태그별 비용.
 
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
+
     Returns:
         {service: {creator: float}}
     """
@@ -158,29 +160,86 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     sql = f"""
         SELECT
             product_product_name                                                AS service,
-            COALESCE(
-                NULLIF(resource_tags_aws_created_by, ''),
-                'aws:createdBy 태그 없음'
-            )                                                                   AS creator,
+            CASE
+                WHEN line_item_line_item_type = 'Tax'
+                    THEN CONCAT('[Tax] ', product_product_name)
+                WHEN product_product_name = 'AWS Data Transfer'
+                    THEN '[공통] Data Transfer'
+                WHEN product_product_name = 'AWS Cost Explorer'
+                    THEN '[공통] Cost Explorer'
+                WHEN product_product_name = 'AWS Support [Business]'
+                    THEN '[공통] Support'
+                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+                    THEN CONCAT('[username] ', resource_tags_user_username)
+                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+                    THEN CONCAT('[requester] ', resource_tags_user_requester)
+                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+                    THEN CONCAT('[project] ', resource_tags_user_project)
+                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+                    THEN resource_tags_user_name
+                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+                    THEN CONCAT('[environment] ', resource_tags_user_environment)
+                WHEN line_item_line_item_type = 'Usage'
+                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+                ELSE CONCAT(product_product_name, ' - 기타')
+            END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
         FROM hyu_ddps_logs.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type != 'Tax'
         GROUP BY
             product_product_name,
-            COALESCE(NULLIF(resource_tags_aws_created_by, ''), 'aws:createdBy 태그 없음')
-        HAVING SUM(line_item_unblended_cost) > 0
+            CASE
+                WHEN line_item_line_item_type = 'Tax'
+                    THEN CONCAT('[Tax] ', product_product_name)
+                WHEN product_product_name = 'AWS Data Transfer'
+                    THEN '[공통] Data Transfer'
+                WHEN product_product_name = 'AWS Cost Explorer'
+                    THEN '[공통] Cost Explorer'
+                WHEN product_product_name = 'AWS Support [Business]'
+                    THEN '[공통] Support'
+                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+                    THEN CONCAT('[username] ', resource_tags_user_username)
+                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+                    THEN CONCAT('[requester] ', resource_tags_user_requester)
+                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+                    THEN CONCAT('[project] ', resource_tags_user_project)
+                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+                    THEN resource_tags_user_name
+                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+                    THEN CONCAT('[environment] ', resource_tags_user_environment)
+                WHEN line_item_line_item_type = 'Usage'
+                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+                ELSE CONCAT(product_product_name, ' - 기타')
+            END
+        HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
     """
     rows   = _run_query(athena, sql)
     result = {}
     for r in rows:
         svc     = r.get('service', '')
-        creator = r.get('creator') or 'aws:createdBy 태그 없음'
+        creator = r.get('creator', '')
         cost    = float(r.get('cost', 0) or 0)
-        result.setdefault(svc, {})
-        result[svc][creator] = result[svc].get(creator, 0.0) + cost
+        if creator:  # SQL에서 이미 분류된 creator 사용
+            # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+            cost_with_tax = cost * 1.10
+            result.setdefault(svc, {})
+            result[svc][creator] = result[svc].get(creator, 0.0) + cost_with_tax
     return result
 
 
@@ -205,7 +264,7 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
-        HAVING SUM(line_item_unblended_cost) > 0
+        HAVING SUM(line_item_unblended_cost) > 0.01
         ORDER BY cost DESC
     """
     rows   = _run_query(athena, sql)
@@ -222,8 +281,12 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
 def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     """
     Q5 해당.
-    MTD 서비스 + aws:createdBy 별 비용.
+    MTD 서비스 + 태그 기반 creator 분류 (세분화, Tax 제외).
     당월 1일 실행 시(범위 없음) {} 반환.
+
+    NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
+
+    Creator 분류는 fetch_daily_by_service_and_creator_cur()와 동일.
 
     Returns:
         {service: {creator: float}}
@@ -235,30 +298,87 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     sql = f"""
         SELECT
             product_product_name                                                AS service,
-            COALESCE(
-                NULLIF(resource_tags_aws_created_by, ''),
-                'aws:createdBy 태그 없음'
-            )                                                                   AS creator,
+            CASE
+                WHEN line_item_line_item_type = 'Tax'
+                    THEN CONCAT('[Tax] ', product_product_name)
+                WHEN product_product_name = 'AWS Data Transfer'
+                    THEN '[공통] Data Transfer'
+                WHEN product_product_name = 'AWS Cost Explorer'
+                    THEN '[공통] Cost Explorer'
+                WHEN product_product_name = 'AWS Support [Business]'
+                    THEN '[공통] Support'
+                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+                    THEN CONCAT('[username] ', resource_tags_user_username)
+                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+                    THEN CONCAT('[requester] ', resource_tags_user_requester)
+                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+                    THEN CONCAT('[project] ', resource_tags_user_project)
+                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+                    THEN resource_tags_user_name
+                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+                    THEN CONCAT('[environment] ', resource_tags_user_environment)
+                WHEN line_item_line_item_type = 'Usage'
+                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+                ELSE CONCAT(product_product_name, ' - 기타')
+            END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
         FROM hyu_ddps_logs.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type != 'Tax'
         GROUP BY
             product_product_name,
-            COALESCE(NULLIF(resource_tags_aws_created_by, ''), 'aws:createdBy 태그 없음')
-        HAVING SUM(line_item_unblended_cost) > 0
+            CASE
+                WHEN line_item_line_item_type = 'Tax'
+                    THEN CONCAT('[Tax] ', product_product_name)
+                WHEN product_product_name = 'AWS Data Transfer'
+                    THEN '[공통] Data Transfer'
+                WHEN product_product_name = 'AWS Cost Explorer'
+                    THEN '[공통] Cost Explorer'
+                WHEN product_product_name = 'AWS Support [Business]'
+                    THEN '[공통] Support'
+                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
+                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
+                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
+                    THEN CONCAT('[username] ', resource_tags_user_username)
+                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
+                    THEN CONCAT('[requester] ', resource_tags_user_requester)
+                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
+                    THEN CONCAT('[project] ', resource_tags_user_project)
+                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
+                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
+                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
+                    THEN resource_tags_user_name
+                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
+                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
+                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
+                    THEN CONCAT('[environment] ', resource_tags_user_environment)
+                WHEN line_item_line_item_type = 'Usage'
+                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+                ELSE CONCAT(product_product_name, ' - 기타')
+            END
+        HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
     """
     rows   = _run_query(athena, sql)
     result = {}
     for r in rows:
         svc     = r.get('service', '')
-        creator = r.get('creator') or 'aws:createdBy 태그 없음'
+        creator = r.get('creator', '')
         cost    = float(r.get('cost', 0) or 0)
-        result.setdefault(svc, {})
-        result[svc][creator] = result[svc].get(creator, 0.0) + cost
+        if creator:  # SQL에서 이미 분류된 creator 사용
+            # IAM User별 비용에 Tax 포함 (Usage × 1.10)
+            cost_with_tax = cost * 1.10
+            result.setdefault(svc, {})
+            result[svc][creator] = result[svc].get(creator, 0.0) + cost_with_tax
     return result
 
 
@@ -288,7 +408,7 @@ def fetch_mtd_by_service_and_region_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
-        HAVING SUM(line_item_unblended_cost) > 0
+        HAVING SUM(line_item_unblended_cost) > 0.01
         ORDER BY cost DESC
     """
     rows   = _run_query(athena, sql)

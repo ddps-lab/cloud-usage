@@ -40,6 +40,20 @@ variable "athena_workgroup" {
   default     = "primary"
 }
 
+# ── Bedrock (AI 분석) ──────────────────────────────────────────────────
+
+variable "bedrock_model_id" {
+  description = "Bedrock에서 사용할 모델 ID (e.g., amazon.nova-micro-v1:0)"
+  type        = string
+  default     = "amazon.nova-micro-v1:0"
+}
+
+variable "bedrock_region" {
+  description = "Bedrock을 지원하는 AWS 리전 (e.g., us-east-1)"
+  type        = string
+  default     = "us-east-1"
+}
+
 # ── Lambda 실행 설정 ────────────────────────────────────────────────
 
 variable "lambda_timeout" {

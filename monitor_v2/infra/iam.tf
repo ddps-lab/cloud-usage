@@ -115,6 +115,16 @@ resource "aws_iam_policy" "monitor_v2" {
         ]
         Resource = "*"
       },
+      # ── Bedrock ────────────────────────────────────────────────────────
+      # cost/analysis.py: summarize() - Nova Micro 모델로 비용 변화 분석
+      {
+        Sid    = "BedrockInvokeModel"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }

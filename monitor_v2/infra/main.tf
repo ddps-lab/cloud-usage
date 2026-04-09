@@ -95,6 +95,8 @@ resource "aws_lambda_function" "monitor_v2" {
       ATHENA_OUTPUT_LOCATION = var.athena_output_location
       ATHENA_DATABASE        = var.athena_database
       ATHENA_WORKGROUP       = var.athena_workgroup
+      BEDROCK_MODEL_ID       = var.bedrock_model_id
+      BEDROCK_REGION         = var.bedrock_region
     }
   }
 
@@ -108,9 +110,10 @@ resource "aws_lambda_function" "monitor_v2" {
 
 # ── EventBridge (CloudWatch Events) ──────────────────────────────────
 #
-# 스케줄 4개 (KST 기준, EventBridge는 UTC 사용)
+# 스케줄 5개 (KST 기준, EventBridge는 UTC 사용)
 #   KST 08:00 = UTC 23:00 전날  → cost  전날 데이터
 #   KST 08:10 = UTC 23:10 전날  → ec2   전날 데이터
+#   KST 08:15 = UTC 23:15 전날  → analysis  AI 비용 변화 분석 (Main 3)
 #   KST 22:00 = UTC 13:00       → cost  당일 데이터
 #   KST 22:10 = UTC 13:10       → ec2   당일 데이터
 
@@ -158,6 +161,29 @@ resource "aws_lambda_permission" "morning_ec2" {
   function_name = aws_lambda_function.monitor_v2.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.morning_ec2.arn
+}
+
+# ── KST 08:15 analysis (Main 3: AI 비용 변화 분석) ──────────────────────
+resource "aws_cloudwatch_event_rule" "morning_analysis" {
+  name                = "${local.function_name}-morning-analysis"
+  description         = "KST 08:15 AI cost analysis report (yesterday)"
+  schedule_expression = "cron(15 23 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "morning_analysis" {
+  rule      = aws_cloudwatch_event_rule.morning_analysis.name
+  target_id = "morning-analysis"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "analysis", date_mode = "today" })
+}
+
+resource "aws_lambda_permission" "morning_analysis" {
+  statement_id  = "AllowEventBridgeMorningAnalysis"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.morning_analysis.arn
 }
 
 # ── KST 22:00 cost (당일) ─────────────────────────────────────────────

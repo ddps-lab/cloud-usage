@@ -3,8 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 from .cost.data_cur import collect_all as collect_cost_data
 from .ec2.data_cur  import collect_all as collect_ec2_data
-from .cost.report_cur import send_cur_report
-from .ec2.report_cur  import send_ec2_cur_report
+from .cost.report_cur      import send_cur_report
+from .ec2.report_cur       import send_ec2_cur_report
+from .cost.report_analysis import send_main3_report
 from .slack import client as slack
 
 KST = timezone(timedelta(hours=9))
@@ -16,10 +17,16 @@ def lambda_handler(event, context):
 
     Args:
         event: {
-            'report_type': 'cost' | 'ec2' | 'all'  (기본값: 'all'),
-            'date_mode':   'today' | 'yesterday'    (기본값: 'today'),
+            'report_type': 'cost' | 'ec2' | 'all' | 'analysis'  (기본값: 'all'),
+            'date_mode':   'today' | 'yesterday'                 (기본값: 'today'),
         }
         context: Lambda context 객체
+
+    report_type:
+        'cost'     → Main 1 (비용 요약)
+        'ec2'      → Main 2 (EC2 상세)
+        'all'      → Main 1 + Main 2  (KST 22:05 트리거)
+        'analysis' → Main 3 (비용 변화 AI 분석)  (KST 08:15 트리거)
 
     date_mode 동작:
         'today'     → today_kst 그대로 → d1_date = today - 1  (KST 22:00, CUR 당일 반영 후)
@@ -36,6 +43,14 @@ def lambda_handler(event, context):
         today_kst = datetime.now(KST).date()
         if date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
+
+        # ── Main 3: 비용 변화 AI 분석 (08:15 KST, 독립 실행) ────────────
+        if report_type == 'analysis':
+            # d1_date = today_kst - 1 (data_cur.py 와 동일한 CE 지연 보정)
+            from datetime import timedelta as td
+            d1_date = today_kst - td(days=1)
+            send_main3_report(d1_date)
+            return 200
 
         sts        = boto3.client('sts')
         account_id = sts.get_caller_identity()['Account']
