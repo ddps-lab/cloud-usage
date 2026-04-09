@@ -51,9 +51,10 @@ def _usage_type_rows(rows: list) -> list:
 def _resource_rows(rows: list) -> list:
     return [
         [r['service'], r['usage_type'], r['resource_id'],
+         r.get('iam_user') or '-',
          f"${r['cost_d1']:,.2f}", f"${r['cost_d2']:,.2f}", _fmt_diff(r['diff'])]
         for r in rows
-    ] or [["(데이터 없음)", "", "", "", "", ""]]
+    ] or [["(데이터 없음)", "", "", "", "", "", ""]]
 
 
 def _build_main3(analysis: dict) -> list:
@@ -89,7 +90,7 @@ def _build_main3(analysis: dict) -> list:
         _divider(),
         *_table_section(
             f"*[ 리소스 ID별 비용 변화 Top {len(resource_rows)} ]*",
-            ["서비스", "타입", "리소스 ID", "어제", "그제", "변화"],
+            ["서비스", "타입", "리소스 ID", "생성자", "어제", "그제", "변화"],
             _resource_rows(resource_rows),
         ),
         _divider(),
