@@ -23,6 +23,10 @@
 -- NOTE: line_item_line_item_type 미필터 → CE API 기본 동작(전체 유형 합산)과 동일.
 --       크레딧·세금 제외가 필요하면 WHERE 절에 아래를 추가:
 --       AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'EdpDiscount')
+--
+-- Q9~Q11: Main 3 비용 변화 AI 분석용 (analysis.py 참조)
+--   d1_date vs d2_date 증감을 서비스 → 리소스 타입 → 리소스 ID 순으로 드릴다운
+--   ABS(diff) DESC 정렬: 증가/감소 모두 포함, 변동 큰 항목 우선
 -- =============================================================================
 
 
@@ -294,6 +298,114 @@ WHERE year  = '2026'
 --     원리: 당월 경과일 비용 ÷ 경과일 수 × 잔여일 수 = 잔여 예상 비용
 --           projected = mtd_actual + daily_avg * days_remaining
 -- -----------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
+-- Q9. fetch_service_diff (analysis.py Main 3)
+--     서비스별 d1 vs d2 비용 차이. 변동 절대값 큰 순 TOP 10.
+--     증가(diff > 0) / 감소(diff < 0) 모두 포함.
+-- -----------------------------------------------------------------------------
+SELECT
+    product_product_name AS service,
+    SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+             THEN line_item_unblended_cost ELSE 0 END) AS cost_d1,
+    SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+             THEN line_item_unblended_cost ELSE 0 END) AS cost_d2,
+    SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+             THEN line_item_unblended_cost ELSE 0 END)
+  - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+             THEN line_item_unblended_cost ELSE 0 END) AS diff
+FROM hyu_ddps_logs.cur_logs
+WHERE year = '2026'
+  AND month = '4'
+  AND DATE(line_item_usage_start_date) IN (DATE('2026-04-08'), DATE('2026-04-07'))
+GROUP BY product_product_name
+HAVING ABS(
+    SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+             THEN line_item_unblended_cost ELSE 0 END)
+  - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+             THEN line_item_unblended_cost ELSE 0 END)
+) > 0.01
+ORDER BY ABS(diff) DESC
+LIMIT 10;
+
+
+-- -----------------------------------------------------------------------------
+-- Q10. fetch_usage_type_diff (analysis.py Main 3)
+--      리소스 타입별 d1 vs d2 비용 차이. (line_item_usage_type)
+--      예: BoxUsage:t3.medium, USW2-EBS:VolumeUsage.gp3
+-- -----------------------------------------------------------------------------
+  SELECT
+      product_product_name AS service,
+      line_item_usage_type AS usage_type,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END) AS cost_d1,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END) AS cost_d2,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END) AS diff
+  FROM hyu_ddps_logs.cur_logs
+  WHERE year  = '2026'
+    AND month IN ('4', '4')
+    AND DATE(line_item_usage_start_date) IN (DATE('2026-04-08'), DATE('2026-04-07'))
+  GROUP BY product_product_name, line_item_usage_type
+  HAVING ABS(
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END)
+  ) > 0.01
+  ORDER BY ABS(
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END)
+  ) DESC
+  LIMIT 10;
+
+
+-- -----------------------------------------------------------------------------
+-- Q11. fetch_resource_diff (analysis.py Main 3)
+--      리소스 ID별 d1 vs d2 비용 차이. (line_item_resource_id)
+--      예: i-005217980755bcf43, vol-xxxx, arn:aws:s3:::bucket-name
+--      resource_id 빈값 제외.
+-- -----------------------------------------------------------------------------
+SELECT
+      product_product_name  AS service,
+      line_item_usage_type  AS usage_type,
+      line_item_resource_id AS resource_id,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END) AS cost_d1,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END) AS cost_d2,
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END) AS diff
+  FROM hyu_ddps_logs.cur_logs
+  WHERE year  = '2026'
+    AND month IN ('4', '4')
+    AND DATE(line_item_usage_start_date) IN (DATE('2026-04-08'), DATE('2026-04-07'))
+    AND line_item_resource_id IS NOT NULL
+    AND line_item_resource_id != ''
+  GROUP BY product_product_name, line_item_usage_type, line_item_resource_id
+  HAVING ABS(
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END)
+  ) > 0.01
+  ORDER BY ABS(
+      SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-08')
+               THEN line_item_unblended_cost ELSE 0 END)
+    - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('2026-04-07')
+               THEN line_item_unblended_cost ELSE 0 END)
+  ) DESC
+  LIMIT 10;
+
+
+-- -----------------------------------------------------------------------------
+-- Q8. fetch_cost_forecast
 SELECT
     SUM(line_item_unblended_cost)                                       AS mtd_actual,
     DATE_DIFF('day', DATE('{mtd_start}'), DATE('{d1_date}')) + 1       AS days_elapsed,

@@ -12,9 +12,10 @@ slack_channel_id = "C..."       # 대상 채널 ID
 # athena_database        = ""
 # athena_workgroup       = ""
 
+# ── Bedrock (선택) ───────────────────────────────────────────────────
+# bedrock_model_id = "amazon.nova-micro-v1:0"  # 기본값 사용 권장
+# bedrock_region   = "us-east-1"               # Nova Micro 지원 리전
+
 # ── Lambda 실행 설정 (선택) ──────────────────────────────────────────
 # lambda_timeout     = 900
 # lambda_memory_size = 512
-
-# ── 스케줄 (선택) ────────────────────────────────────────────────────
-# schedule_expression = "cron(5 13 * * ? *)"  # KST 22:05
