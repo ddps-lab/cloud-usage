@@ -46,7 +46,6 @@ def lambda_handler(event, context):
 
         # ── Main 3: 비용 변화 AI 분석 (08:15 KST, 독립 실행) ────────────
         if report_type == 'analysis':
-            # d1_date = today_kst - 1 (data_cur.py 와 동일한 CE 지연 보정)
             from datetime import timedelta as td
             d1_date = today_kst - td(days=1)
             send_main3_report(d1_date)

@@ -8,26 +8,37 @@ CUR Athena 기반 비용 증감 원인 분석 + Amazon Nova Micro LLM 요약.
     Q10  리소스 타입별      (line_item_usage_type)
     Q11  리소스 ID별        (line_item_resource_id)
 
+신규 분석:
+    Q12  최근 30일 일별 총비용 → 이상치 탐지 (μ ± kσ)
+    Q13  전월 동일일 총비용    → 전월 동일일 비교
+
 환경변수:
     BEDROCK_MODEL_ID    기본: amazon.nova-micro-v1:0
     BEDROCK_REGION      기본: us-east-1  (Nova Micro 지원 리전)
+    ANOMALY_SIGMA       기본: 2.0        (이상치 판단 σ 배수)
+    ANOMALY_HIST_DAYS   기본: 30         (히스토리 기간)
 """
 
 import os
 import json
+import math
+from calendar import monthrange
 from pprint import pprint
 
 import boto3
 import logging
 from datetime import date, timedelta
 
-from .data_cur import _run_query, _partition
+from .data_cur import _run_query, _partition, fetch_mtd_total_cur
+from .data     import fetch_cost_forecast
 
 log = logging.getLogger(__name__)
 
-_BEDROCK_MODEL_ID = os.environ.get('BEDROCK_MODEL_ID')
-_BEDROCK_REGION   = os.environ.get('BEDROCK_REGION')
-_TOP_N            = 10
+_BEDROCK_MODEL_ID  = os.environ.get('BEDROCK_MODEL_ID')
+_BEDROCK_REGION    = os.environ.get('BEDROCK_REGION')
+_TOP_N             = 10
+_ANOMALY_SIGMA     = float(os.environ.get('ANOMALY_SIGMA', '1.5'))
+_ANOMALY_HIST_DAYS = int(os.environ.get('ANOMALY_HIST_DAYS', '30'))
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +208,170 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
         }
         for r in rows if r.get('service')
     ]
+
+
+# ---------------------------------------------------------------------------
+# 신규 Athena 쿼리 (Q12, Q13) + 순수 계산
+# ---------------------------------------------------------------------------
+
+_WEEKDAY_LABEL = ['월', '화', '수', '목', '금', '토', '일']
+
+
+def _day_context(d: date) -> str:
+    wd = d.weekday()
+    label = _WEEKDAY_LABEL[wd]
+    if wd >= 5:
+        return f"{label}요일 (주말)"
+    return f"{label}요일 (주중)"
+
+
+def _same_day_last_month(d: date) -> date:
+    year, month = (d.year, d.month - 1) if d.month > 1 else (d.year - 1, 12)
+    max_day = monthrange(year, month)[1]
+    return date(year, month, min(d.day, max_day))
+
+
+def fetch_historical_stats(athena, d1_date: date, d1_total: float) -> dict:
+    """
+    Q12: 최근 ANOMALY_HIST_DAYS일 일별 총비용 (d1 제외) → μ, σ, is_anomaly 계산.
+
+    Returns:
+        {
+            'mu_7': float, 'sigma_7': float,
+            'mu_30': float, 'sigma_30': float,
+            'is_anomaly_7': bool, 'is_anomaly_30': bool,
+            'anomaly_direction': str | None,  # 'high' | 'low' | None
+            'hist_days': int,
+        }
+    """
+    d2_date    = d1_date - timedelta(days=1)
+    start_date = d1_date - timedelta(days=_ANOMALY_HIST_DAYS)
+
+    years_set  = set()
+    months_set = set()
+    cur = start_date
+    while cur <= d2_date:
+        years_set.add(str(cur.year))
+        months_set.add(str(cur.month))
+        cur += timedelta(days=1)
+
+    year_range  = ', '.join(f"'{y}'" for y in sorted(years_set))
+    month_range = ', '.join(f"'{m}'" for m in sorted(months_set))
+
+    sql = f"""
+        SELECT
+            DATE(line_item_usage_start_date) AS cost_date,
+            SUM(line_item_unblended_cost)    AS daily_total
+        FROM hyu_ddps_logs.cur_logs
+        WHERE year  IN ({year_range})
+          AND month IN ({month_range})
+          AND DATE(line_item_usage_start_date) BETWEEN DATE('{start_date}') AND DATE('{d2_date}')
+        GROUP BY DATE(line_item_usage_start_date)
+        ORDER BY cost_date DESC
+    """
+    rows = _run_query(athena, sql)
+    hist = [float(r['daily_total']) for r in rows if r.get('daily_total')]
+
+    n = len(hist)
+
+    empty = {
+        'mu_7': 0.0, 'sigma_7': 0.0,
+        'mu_30': 0.0, 'sigma_30': 0.0,
+        'is_anomaly_7': False, 'is_anomaly_30': False,
+        'anomaly_direction': None, 'hist_days': n,
+    }
+    if n < 7:
+        return empty
+
+    def _stats(values):
+        mu = sum(values) / len(values)
+        if len(values) < 2:
+            return mu, 0.0
+        variance = sum((v - mu) ** 2 for v in values) / (len(values) - 1)
+        return mu, math.sqrt(variance)
+
+    hist7  = hist[:min(7, n)]
+    hist30 = hist
+
+    mu_7, sigma_7   = _stats(hist7)
+    mu_30, sigma_30 = _stats(hist30)
+
+    k = _ANOMALY_SIGMA
+    is_anomaly_7  = d1_total > mu_7  + k * sigma_7
+    is_anomaly_30 = d1_total > mu_30 + k * sigma_30
+
+    direction = 'high' if (is_anomaly_7 or is_anomaly_30) else None
+
+    return {
+        'mu_7':      mu_7,
+        'sigma_7':   sigma_7,
+        'mu_30':     mu_30,
+        'sigma_30':  sigma_30,
+        'is_anomaly_7':  is_anomaly_7,
+        'is_anomaly_30': is_anomaly_30,
+        'anomaly_direction': direction,
+        'hist_days': n,
+    }
+
+
+def fetch_lm_same_day(athena, d1_date: date) -> tuple:
+    """
+    Q13: 전월 동일일 총비용.
+
+    Returns:
+        (lm_date: date, lm_total: float)
+    """
+    lm_date = _same_day_last_month(d1_date)
+    lm_year, lm_month = _partition(lm_date)
+
+    sql = f"""
+        SELECT SUM(line_item_unblended_cost) AS cost
+        FROM hyu_ddps_logs.cur_logs
+        WHERE year  = '{lm_year}'
+          AND month = '{lm_month}'
+          AND DATE(line_item_usage_start_date) = DATE('{lm_date}')
+    """
+    rows = _run_query(athena, sql)
+    if rows and rows[0].get('cost'):
+        return lm_date, float(rows[0]['cost'])
+    return lm_date, 0.0
+
+
+def compute_mtd_ratio(mtd_this: float, forecast: float, d1_date: date) -> dict:
+    """
+    이달 누적 비용 소진 현황 계산 (순수 계산, Athena 불필요).
+    forecast=0 이면 projected_total 계산 불가 → available=False 반환.
+
+    수치 설명:
+        mtd_this:        이달 1일 ~ d1_date 누적 실제 비용
+        projected_total: mtd_this + forecast  (CE Forecast API 포함 이달 예상 합계)
+        mtd_ratio:       mtd_this / projected_total  (현재까지 소진 비율)
+
+    Returns:
+        {
+            'available':       bool,
+            'mtd_this':        float,  # 이달 누계 실비용
+            'projected_total': float,  # 이달 예상 합계 (MTD + forecast)
+            'mtd_ratio':       float,  # 현재 소진률
+        }
+    """
+    if forecast <= 0:
+        return {
+            'available':       False,
+            'mtd_this':        mtd_this,
+            'projected_total': 0.0,
+            'mtd_ratio':       0.0,
+        }
+
+    projected_total = mtd_this + forecast
+    mtd_ratio       = mtd_this / projected_total
+
+    return {
+        'available':       True,
+        'mtd_this':        mtd_this,
+        'projected_total': projected_total,
+        'mtd_ratio':       mtd_ratio,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -376,90 +551,148 @@ def _merge_rows(service_rows: list, resource_rows: list) -> list:
 
 
 _SYSTEM_PROMPT = """\
-당신은 AWS 비용 분석 요약 도우미입니다.
-사용자가 어제/그제 AWS 비용 데이터를 제공하면, 아래 형식과 규칙에 따라 한국어로 요약합니다.
+당신은 AWS 클라우드 비용 분석 전문가입니다.
+어제 비용 데이터와 다양한 비교 지표(전일 대비, 7일/30일 평균, 전월 동일일, 이달 누적 소진률)를 종합하여
+비용 변화의 원인을 깊이 있게 분석하고 한국어로 보고합니다.
 
-=== 출력 형식 ===
+=== 분석 원칙 ===
 
-첫 줄: "전일 대비 $금액 (±X%) 증가/감소했으며, 주요 원인은 [서비스 2~3개]입니다."
+단순 나열이 아닌 원인 분석:
+  - 어제/그제 증감 수치만 반복하지 말 것.
+  - 비교 지표(7일/30일 평균, 전월 동일일, MTD 소진률)를 근거로 삼아
+    "이 변화가 일시적인지, 추세인지, 예외적인 사건인지"를 판단해 서술합니다.
+  - IAM User와 리소스를 연결해 "누가, 무엇을, 왜 변화시켰는지"를 구체적으로 서술합니다.
+
+비교 지표 활용 방법:
+  - 전월 동일일 비교: "전월 같은 날($X.XX)보다 Y% 높다/낮다" → 월간 패턴 변화 여부 판단
+  - MTD 소진률: "이달 예상 대비 Z%p 앞서 소진 중"이면 이 추세가 지속될 경우 월 예산에 미칠 영향 언급
+  - 7일/30일 이상치: 단순 전일 대비가 아닌 최근 경향 기준으로 이례성 판단
+
+=== 출력 구조 ===
+
+[첫 줄 — 두괄식 한 줄 요약. 반드시 정상/이상 판단 포함]
+
+  이상치(7일 또는 30일 기준 고비용)인 경우:
+    "어제 AWS 비용은 $X.XX로, 최근 [7일/30일] 평균($Y.YY)을 크게 초과한 이상 수준입니다. [서비스명]에서 급증이 발생했습니다."
+  정상인 경우:
+    "어제 AWS 비용은 $X.XX로, 최근 30일 평균($Y.YY) 내 정상 범위입니다. [서비스명 2건]에서 주요 변동이 있었습니다."
+  어제가 주말이고 정상인 경우:
+    "어제는 주말로 전반적인 비용이 줄어 $X.XX를 기록했으며, 최근 30일 평균($Y.YY) 내 정상 범위입니다."
+
+[두 번째 단락 — 비교 지표 기반 맥락 분석. 아래 중 해당하는 것만 자연스럽게 서술]
+  - 전월 동일일 대비 차이가 ±10% 이상이면 반드시 언급
+  - MTD 소진률 편차가 ±5%p 이상이면 반드시 언급
+  - 이상치일 때 "이 추세가 지속되면 이달 예산에 영향을 줄 수 있습니다" 등 전망 포함
+
 빈 줄
 ▲ 증가 원인
-서비스명 — $금액  설명
+서비스명 — $금액  원인 분석 (IAM User, 리소스 타입, 이전 패턴 대비 설명)
 ▼ 감소 원인
-서비스명 — $금액  설명
+서비스명 — $금액  원인 분석
 
-증가/감소 어느 쪽이 없으면 해당 소제목(▲/▼) 전체를 생략하세요.
-"비용이 증가한 서비스" 섹션의 항목은 반드시 ▲에, "비용이 감소한 서비스" 섹션의 항목은 반드시 ▼에 작성하세요.
+=== 서비스 서술 범위 규칙 (반드시 준수) ===
 
-=== [타입] 별 표현 규칙 ===
+[이상치인 경우]
+  - ▲ 증가 원인: 고비용을 유발한 서비스와 IAM User 중심으로 원인 분석 서술.
+  - ▼ 감소 원인: 서술하지 않습니다. ▼ 섹션 전체 생략.
+  - 주말임에도 이상치인 경우: "주말임에도 불구하고" 표현 사용.
+
+[정상 범위인 경우]
+  - 비용 변동 절대값 상위 2건 서비스와 IAM User를 반드시 서술합니다.
+  - 3번째 이하 서비스는 생략합니다.
+
+=== 서비스별 서술 방식 ===
 
 서비스 타입:
-  [신규] — 그제 $0이었다가 어제 처음 비용 발생. "처음 사용됨", "어제 처음 발생함" 등으로 서술.
-  [중단] — 그제까지 사용하다가 어제 $0. "어제 사용 없었음", "어제 이루어지지 않음" 등으로 서술.
-  [증가] — 어제/그제 모두 비용 있고 어제가 더 큼. "늘어남", "더 많이 사용됨" 등으로 서술.
-  [감소] — 어제/그제 모두 비용 있고 어제가 더 작음. "줄어듦", "덜 사용됨" 등으로 서술.
+  [신규] — 그제 $0 → 어제 처음 발생. "처음 사용됨" 등.
+  [중단] — 어제 $0 → 그제까지 사용. "어제 사용 없었음" 등.
+  [증가] / [감소] — 두 날 모두 비용 존재. 방향에 맞게 서술.
 
-usage detail 타입 (서비스 내 세부 항목):
-  [신규 발생] — 이 usage가 어제 처음 등장. "처음 켜짐", "처음 시작됨" 등으로 서술.
-  [어제 중단] — 이 usage가 어제 사용 없음. "어제 없었음", "중단됨" 등으로 서술.
-               절대 "처음"이라는 단어를 쓰지 말 것.
-  [증가] / [감소] — 양일 모두 사용. 방향에 맞게 "늘어남" / "줄어듦" 등으로 서술.
+usage detail 타입:
+  [신규 발생] — 어제 처음 등장. "처음 켜짐" 등. 절대 [중단]에 "처음" 사용 금지.
+  [어제 중단] — 어제 사용 없음. "중단됨" 등.
+  [증가] / [감소] — 방향에 맞게 서술.
 
-=== 설명 작성 규칙 ===
-
-서비스 1줄 설명은 detail 항목들을 종합해 완전한 문장으로 작성하세요.
-명사형 종결("~중단됨", "~줄어듦") 대신 동사형 서술("~중단되었습니다", "~줄었습니다")로 마무리하세요.
-생성자가 있는 경우 반드시 이름을 포함해 누가 어떤 리소스를 어떻게 했는지 서술하세요.
+완전한 문장으로, 동사형 종결("~했습니다", "~줄었습니다")로 마무리합니다.
+생성자(IAM User)가 있으면 반드시 이름과 행동을 함께 서술합니다.
 
 === 입출력 예시 (이 텍스트는 출력하지 말 것) ===
 
-입력 예시:
-어제(2026-04-09) AWS 비용: $32.69
-그제(2026-04-08) AWS 비용: $61.80
-전일 대비: -$29.11 (-47.1%)
+[이상치 예시 입력]
+어제(2026-04-09, 목요일 (주중)) AWS 비용: $180.00
+그제(2026-04-08, 수요일 (주중)) AWS 비용: $61.80
+전일 대비: +$118.20 (+191.3%)
+
+=== 비교 지표 ===
+최근 7일 평균: $45.00 (σ=8.50)
+  → 어제 비용이 7일 기준 이상치 ▲ 고비용 (μ + 2.0σ=$62.00 초과)
+최근 30일 평균: $48.00 (σ=10.00)
+  → 어제 비용이 30일 기준 이상치 ▲ 고비용 (μ + 2.0σ=$68.00 초과)
+전월 동일일(2026-03-09) 비용: $52.00 (+246.2%)
+이달 누적 소진률: 42.1% (예상 29.0%, 예상보다 +13.1%p 앞서 소진 중)
 
 === 비용이 증가한 서비스 ===
+EC2  $125.00  [증가]  어제 $155.00 / 그제 $30.00
+    mhsong: 미국 서부(us-west-2) c8gd.48xlarge Spot 인스턴스 ×10개  [신규 발생]  어제 $120.00 / 그제 $0.00
+    jhpark: 미국 서부(us-west-2) inf2.8xlarge 온디맨드 인스턴스  [증가]  어제 $35.00 / 그제 $30.00
 
+=== 비용이 감소한 서비스 ===
+S3  $2.00  [감소]  어제 $1.00 / 그제 $3.00
+
+[이상치 예시 출력]
+어제 AWS 비용은 $180.00로, 최근 7일 평균($45.00)의 4배를 초과한 이상 수준입니다. EC2에서 대규모 인스턴스 신규 가동이 발생했습니다.
+
+전월 동일일($52.00) 대비 246% 높은 수준이며, 이달 누적 소진률도 42.1%(예상 29.0%)로 예상보다 13.1%p 앞서 소진 중입니다. 이 추세가 이어진다면 이달 예산 초과 가능성이 있습니다.
+
+▲ 증가 원인
+EC2 — $125.00  mhsong이 미국 서부에서 c8gd.48xlarge Spot 인스턴스 10대를 어제 처음 가동하여 $120.00의 비용이 발생했습니다. jhpark의 inf2.8xlarge 인스턴스도 소폭 증가했습니다.
+
+---
+
+[정상 예시 입력]
+어제(2026-04-12, 일요일 (주말)) AWS 비용: $32.69
+그제(2026-04-11, 토요일 (주말)) AWS 비용: $61.80
+전일 대비: -$29.11 (-47.1%)
+
+=== 비교 지표 ===
+최근 7일 평균: $45.00 (σ=8.50)
+  → 어제 비용이 7일 기준 정상 범위 (μ - 2.0σ=$28.00 ~ μ + 2.0σ=$62.00)
+최근 30일 평균: $48.00 (σ=10.00)
+  → 어제 비용이 30일 기준 정상 범위 (μ - 2.0σ=$28.00 ~ μ + 2.0σ=$68.00)
+전월 동일일(2026-03-12) 비용: $38.00 (-14.0%)
+이달 누적 소진률: 28.5% (예상 38.7%, 예상 대비 10.2%p 절약 중)
+
+=== 비용이 증가한 서비스 ===
 Bedrock  $0.04  [신규]  어제 $0.04 / 그제 $0.00
 
 === 비용이 감소한 서비스 ===
-
 EC2  $12.87  [감소]  어제 $30.75 / 그제 $43.62
     mhsong: 미국 서부(us-west-2) c8gd.48xlarge Spot 인스턴스 ×2개  [감소]  어제 $8.19 / 그제 $24.82
     jhpark: 미국 서부(us-west-2) inf2.8xlarge 온디맨드 인스턴스 ×5개  [증가]  어제 $14.85 / 그제 $5.86
-    yjjung: 미국 서부(us-west-2) g4dn.12xlarge 온디맨드 인스턴스  [어제 중단]  어제 $0.00 / 그제 $5.34
 S3  $12.14  [감소]  어제 $0.36 / 그제 $12.50
-    mhsong: 서울(ap-northeast-2)에서 미국 서부(us-west-2)로 나가는 데이터 전송  [감소]  어제 $0.00 / 그제 $8.89
-    swjeong: USW2-TimedStorage-ByteHrs  [어제 중단]  어제 $0.00 / 그제 $3.16
-Lambda  $3.59  [감소]  어제 $0.93 / 그제 $4.52
-ELB  $0.25  [감소]  어제 $0.35 / 그제 $0.60
-VPC  $0.13  [감소]  어제 $0.15 / 그제 $0.28
-Cost Explorer  $0.10  [감소]  어제 $0.02 / 그제 $0.12
-CloudWatch  $0.07  [감소]  어제 $0.11 / 그제 $0.18
+    mhsong: 서울(ap-northeast-2)에서 미국 서부(us-west-2)로 나가는 데이터 전송  [어제 중단]  어제 $0.00 / 그제 $8.89
 
-출력 예시:
-전일 대비 $29.11 (-47.1%) 감소했으며, 주요 원인은 EC2와 S3입니다.
+[정상 예시 출력]
+어제는 주말로 전반적인 비용이 줄어 $32.69를 기록했으며, 최근 30일 평균($48.00) 내 정상 범위입니다. EC2와 S3에서 주요 변동이 있었습니다.
 
-▲ 증가 원인
-Bedrock — $0.04  Bedrock 모델 호출이 어제 처음 발생했습니다.
+전월 동일 주말($38.00)과 비교해도 14% 낮은 수준으로, 주말 비용 패턴은 안정적입니다. 이달 누적 소진률도 28.5%(예상 38.7%)로 예상보다 절약 중입니다.
 
 ▼ 감소 원인
-EC2 — $12.87  mhsong의 c8gd.48xlarge Spot 인스턴스 2대와 yjjung의 g4dn.12xlarge 인스턴스가 각각 사용량 감소 및 중단되었습니다. jhpark의 inf2.8xlarge 인스턴스 5대는 오히려 사용량이 늘었지만 전체적으로 EC2 비용이 줄었습니다.
-S3 — $12.14  mhsong의 서울에서 미국 서부로 나가는 데이터 전송이 어제 이루어지지 않았고, swjeong의 스토리지 사용도 어제 없었습니다.
-Lambda — $3.59  Lambda 함수 실행 비용이 전날보다 줄었습니다.
-ELB — $0.25  로드 밸런서 사용 비용이 전날보다 줄었습니다.
-VPC — $0.13  VPC 관련 비용이 전날보다 줄었습니다.
-Cost Explorer — $0.10  Cost Explorer API 조회 비용이 전날보다 줄었습니다.
-CloudWatch — $0.07  CloudWatch 모니터링 비용이 전날보다 줄었습니다.
+EC2 — $12.87  주말로 mhsong의 c8gd.48xlarge Spot 인스턴스 2대 사용량이 줄었습니다. jhpark의 inf2.8xlarge 인스턴스 5대는 소폭 증가했으나 전체 EC2 비용은 감소했습니다.
+S3 — $12.14  mhsong의 서울에서 미국 서부로 나가는 데이터 전송이 주말 동안 이루어지지 않았습니다.
 
 === 금지 사항 ===
 
-설명 빈칸 금지.
 리소스 ID(i-xxx, vol-xxx, arn:...) 포함 금지.
 금액은 항상 양수. 부호는 ▲/▼ 소제목으로만 구분.
-마크다운(** * #) 사용 금지.
+마크다운(# ## ### ** *) 사용 금지. 특히 첫 줄에 ### 절대 금지.
 "해당 서비스 사용량 변화" 사용 금지.
-생성자가 있는데 이름 빠뜨리기 금지."""
+"주말 비용 패턴" 표현 금지. 대신 "주말로 전반적인 비용이 줄었습니다" 등으로 서술.
+"어제 중단으로 감소했습니다" 표현 금지. 서비스가 어제 사용되지 않았다면 "어제 사용 내역이 없었습니다" 등으로 서술.
+생성자가 있는데 이름 빠뜨리기 금지.
+이상치 시 ▼ 감소 원인 섹션 출력 금지.
+비교 지표 수치를 단순 나열만 하고 해석하지 않는 것 금지.
+$1 미만 변동 서비스 언급 금지."""
 
 
 # 서비스명 단축 — Python에서 미리 처리해 LLM에 전달
@@ -517,32 +750,88 @@ def _fmt_section(rows: list) -> str:
     return '\n'.join(blocks)
 
 
+def _anomaly_text(mu: float, sigma: float, d1_total: float) -> str:
+    k = _ANOMALY_SIGMA
+    lower = mu - k * sigma
+    upper = mu + k * sigma
+    if d1_total > upper:
+        return f"이상치 ▲ 고비용 (μ + {k}σ={upper:.2f} 초과)"
+    return f"정상 범위 (μ - {k}σ={lower:.2f} ~ μ + {k}σ={upper:.2f})"
+
+
+
 def _build_user_message(
     d1_date: date, d2_date: date,
     d1_total: float, d2_total: float,
     service_rows: list, usage_type_rows: list, resource_rows: list,
+    anomaly_stats: dict = None,
+    lm_date: date = None, lm_total: float = 0.0,
+    mtd_ratio_info: dict = None,
+    d1_day_context: str = '', d2_day_context: str = '',
 ) -> str:
     diff = d1_total - d2_total
     pct  = (diff / d2_total * 100) if d2_total else 0.0
 
+    is_anomaly = bool(
+        anomaly_stats
+        and (anomaly_stats.get('is_anomaly_7') or anomaly_stats.get('is_anomaly_30'))
+    )
+
     merged = _merge_rows(service_rows, resource_rows)
-    #print("merged")
-    #pprint(merged)
 
     increase_rows = [s for s in merged if s['total_diff'] > 0]
     decrease_rows = [s for s in merged if s['total_diff'] < 0]
 
+    # 정상 범위일 때: 증가/감소 각각 상위 2건만 LLM에 전달 (소액 나열 방지)
+    if not is_anomaly:
+        increase_rows = increase_rows[:2]
+        decrease_rows = decrease_rows[:2]
+
     increase_text = _fmt_section(increase_rows)
     decrease_text = _fmt_section(decrease_rows)
 
-    #print("increase_text")
-    #pprint(increase_text)
-    #print("decrease_text")
-    #pprint(decrease_text)
+    # 비교 지표 섹션
+    comparison_lines = []
+    if anomaly_stats and anomaly_stats.get('hist_days', 0) >= 7:
+        mu_7     = anomaly_stats['mu_7']
+        sigma_7  = anomaly_stats['sigma_7']
+        mu_30    = anomaly_stats['mu_30']
+        sigma_30 = anomaly_stats['sigma_30']
+        comparison_lines += [
+            f"최근 7일 평균: ${mu_7:.2f} (σ={sigma_7:.2f})",
+            f"  → 어제 비용이 7일 기준 {_anomaly_text(mu_7, sigma_7, d1_total)}",
+            f"최근 30일 평균: ${mu_30:.2f} (σ={sigma_30:.2f})",
+            f"  → 어제 비용이 30일 기준 {_anomaly_text(mu_30, sigma_30, d1_total)}",
+        ]
+    else:
+        comparison_lines.append("최근 히스토리 데이터 부족 (이상치 판단 생략)")
 
-    return f"""어제({d1_date}) AWS 비용: ${d1_total:,.2f}
-그제({d2_date}) AWS 비용: ${d2_total:,.2f}
+    if lm_date and lm_total > 0:
+        lm_diff = d1_total - lm_total
+        lm_pct  = (lm_diff / lm_total * 100) if lm_total else 0.0
+        comparison_lines.append(f"전월 동일일({lm_date}) 비용: ${lm_total:.2f} ({lm_pct:+.1f}%)")
+
+    if mtd_ratio_info and mtd_ratio_info.get('available'):
+        m = mtd_ratio_info
+        comparison_lines.append(
+            f"이달 누적 소진 현황:"
+            f"\n  - 현재까지 누적(MTD): ${m['mtd_this']:,.2f}"
+            f"\n  - 이달 예상 합계(MTD + Forecast): ${m['projected_total']:,.2f}"
+            f"\n  - 현재 소진률: {m['mtd_ratio']:.1%}"
+        )
+
+    comparison_section = '\n'.join(comparison_lines) if comparison_lines else '(없음)'
+
+    d1_label = f"{d1_date}, {d1_day_context}" if d1_day_context else str(d1_date)
+    d2_label = f"{d2_date}, {d2_day_context}" if d2_day_context else str(d2_date)
+
+    return f"""어제({d1_label}) AWS 비용: ${d1_total:,.2f}
+그제({d2_label}) AWS 비용: ${d2_total:,.2f}
 전일 대비: {_fmt_sign(diff)} ({pct:+.1f}%)
+
+=== 비교 지표 ===
+
+{comparison_section}
 
 === 비용이 증가한 서비스 ===
 
@@ -563,6 +852,10 @@ def summarize(
     d1_date: date, d2_date: date,
     d1_total: float, d2_total: float,
     service_rows: list, usage_type_rows: list, resource_rows: list,
+    anomaly_stats: dict = None,
+    lm_date: date = None, lm_total: float = 0.0,
+    mtd_ratio_info: dict = None,
+    d1_day_context: str = '', d2_day_context: str = '',
 ) -> str:
     """
     Nova Micro에게 비용 증감 원인 분석을 요청하고 요약 텍스트를 반환한다.
@@ -572,9 +865,12 @@ def summarize(
     user_message = _build_user_message(
         d1_date, d2_date, d1_total, d2_total,
         service_rows, usage_type_rows, resource_rows,
+        anomaly_stats=anomaly_stats,
+        lm_date=lm_date, lm_total=lm_total,
+        mtd_ratio_info=mtd_ratio_info,
+        d1_day_context=d1_day_context,
+        d2_day_context=d2_day_context,
     )
-    #print("user_message")
-    #pprint(user_message)
     try:
         bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
         body = json.dumps({
@@ -592,7 +888,11 @@ def summarize(
             accept='application/json',
         )
         result = json.loads(resp['body'].read())
-        return result['output']['message']['content'][0]['text'].strip()
+        text   = result['output']['message']['content'][0]['text'].strip()
+        # LLM이 출력한 마크다운 헤딩(# ## ###)을 제거
+        import re
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        return text.strip()
 
     except Exception as e:
         log.error("Bedrock 호출 실패: %s", e)
@@ -607,25 +907,33 @@ def summarize(
 
 def collect_all(d1_date: date) -> dict:
     """
-    Athena 3개 쿼리 실행 + Nova Micro 요약 생성.
+    Athena 쿼리 실행 (Q9~Q13) + CE Forecast + Nova Micro 요약 생성.
+    mtd_this / forecast 는 내부에서 직접 수집한다.
 
     Args:
-        d1_date: 리포트 기준일 (data_cur.py 와 동일한 d1_date 사용)
+        d1_date: 리포트 기준일
 
     Returns:
         {
-            'd1_date':       date,
-            'd2_date':       date,
-            'd1_total':      float,
-            'd2_total':      float,
-            'service_rows':  list,
+            'd1_date':         date,
+            'd2_date':         date,
+            'd1_total':        float,
+            'd2_total':        float,
+            'service_rows':    list,
             'usage_type_rows': list,
-            'resource_rows': list,
-            'summary':       str,   # Nova Micro 요약
+            'resource_rows':   list,
+            'anomaly_stats':   dict,
+            'lm_total':        float,
+            'lm_date':         date,
+            'mtd_ratio_info':  dict,
+            'd1_day_context':  str,
+            'd2_day_context':  str,
+            'summary':         str,
         }
     """
     d2_date = d1_date - timedelta(days=1)
     athena  = boto3.client('athena', region_name='ap-northeast-2')
+    ce      = boto3.client('ce',     region_name='us-east-1')
 
     service_rows    = fetch_service_diff(athena, d1_date, d2_date)
     usage_type_rows = fetch_usage_type_diff(athena, d1_date, d2_date)
@@ -634,9 +942,23 @@ def collect_all(d1_date: date) -> dict:
     d1_total = sum(r['cost_d1'] for r in service_rows)
     d2_total = sum(r['cost_d2'] for r in service_rows)
 
+    anomaly_stats      = fetch_historical_stats(athena, d1_date, d1_total)
+    lm_date, lm_total = fetch_lm_same_day(athena, d1_date)
+    mtd_this           = fetch_mtd_total_cur(athena, d1_date)
+    forecast           = fetch_cost_forecast(ce)
+    mtd_ratio_info     = compute_mtd_ratio(mtd_this, forecast, d1_date)
+
+    d1_day_context = _day_context(d1_date)
+    d2_day_context = _day_context(d2_date)
+
     summary = summarize(
         d1_date, d2_date, d1_total, d2_total,
         service_rows, usage_type_rows, resource_rows,
+        anomaly_stats=anomaly_stats,
+        lm_date=lm_date, lm_total=lm_total,
+        mtd_ratio_info=mtd_ratio_info,
+        d1_day_context=d1_day_context,
+        d2_day_context=d2_day_context,
     )
 
     return {
@@ -647,5 +969,11 @@ def collect_all(d1_date: date) -> dict:
         'service_rows':    service_rows,
         'usage_type_rows': usage_type_rows,
         'resource_rows':   resource_rows,
+        'anomaly_stats':   anomaly_stats,
+        'lm_total':        lm_total,
+        'lm_date':         lm_date,
+        'mtd_ratio_info':  mtd_ratio_info,
+        'd1_day_context':  d1_day_context,
+        'd2_day_context':  d2_day_context,
         'summary':         summary,
     }
