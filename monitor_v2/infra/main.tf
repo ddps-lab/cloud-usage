@@ -95,6 +95,7 @@ resource "aws_lambda_function" "monitor_v2" {
       ATHENA_OUTPUT_LOCATION = var.athena_output_location
       ATHENA_DATABASE        = var.athena_database
       ATHENA_WORKGROUP       = var.athena_workgroup
+      ATHENA_REGION          = var.athena_region
       BEDROCK_MODEL_ID       = var.bedrock_model_id
       BEDROCK_REGION         = var.bedrock_region
     }

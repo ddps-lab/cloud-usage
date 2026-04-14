@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 _ATHENA_DATABASE        = os.environ.get('ATHENA_DATABASE')
 _ATHENA_OUTPUT_LOCATION = os.environ.get('ATHENA_OUTPUT_LOCATION')
 _ATHENA_WORKGROUP       = os.environ.get('ATHENA_WORKGROUP', 'primary')
+_ATHENA_REGION          = os.environ.get('ATHENA_REGION', 'ap-northeast-2')
 
 _POLL_INTERVAL = 1.5   # seconds
 _MAX_WAIT      = 120   # seconds
@@ -130,7 +131,7 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
         SELECT
             product_product_name                  AS service,
             SUM(line_item_unblended_cost)         AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
@@ -190,7 +191,7 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 ELSE CONCAT(product_product_name, ' - 기타')
             END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -257,7 +258,7 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -328,7 +329,7 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                 ELSE CONCAT(product_product_name, ' - 기타')
             END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -400,7 +401,7 @@ def fetch_mtd_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -434,7 +435,7 @@ def fetch_mtd_total_cur(athena, d1_date: date) -> float:
     year, month = _partition(d1_date)
     sql = f"""
         SELECT SUM(line_item_unblended_cost) AS mtd_total
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -472,7 +473,7 @@ def collect_all(today_kst: date) -> dict:
             'forecast':       float,  # CE API (0.0 = 예측 불가)
         }
     """
-    athena = boto3.client('athena', region_name='ap-northeast-2')
+    athena = boto3.client('athena', region_name=_ATHENA_REGION)
     ce     = boto3.client('ce',     region_name='us-east-1')
 
     d1_date = today_kst #- timedelta(days=1)

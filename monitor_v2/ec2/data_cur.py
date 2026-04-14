@@ -25,7 +25,7 @@ from .data import (
     collect_unused_ebs,
     collect_unused_snapshots,
 )
-from ..cost.data_cur import _run_query, _partition
+from ..cost.data_cur import _run_query, _partition, _ATHENA_DATABASE, _ATHENA_REGION
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def collect_ec2_cost_by_type_cur(athena, d1_date: date) -> dict:
             product_instance_type                                           AS instance_type,
             COALESCE(NULLIF(product_region_code, ''), 'global')            AS region,
             SUM(line_item_unblended_cost)                                   AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -83,7 +83,7 @@ def collect_ec2_cost_by_type_mtd_cur(athena, d1_date: date) -> dict:
             product_instance_type                                           AS instance_type,
             COALESCE(NULLIF(product_region_code, ''), 'global')            AS region,
             SUM(line_item_unblended_cost)                                   AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -122,7 +122,7 @@ def collect_spot_cost_cur(athena, d1_date: date) -> tuple:
         y, m = _partition(end)
         sql = f"""
             SELECT SUM(line_item_unblended_cost) AS spot_cost
-            FROM hyu_ddps_logs.cur_logs
+            FROM {_ATHENA_DATABASE}.cur_logs
             WHERE year  = '{y}'
               AND month = '{m}'
               AND DATE(line_item_usage_start_date)
@@ -166,7 +166,7 @@ def collect_instance_cost_cur(athena, d1_date: date) -> dict:
             SPLIT_PART(COALESCE(resource_tags_aws_created_by, ''), ':', 3)     AS iam_user,
             SUM(line_item_usage_amount)                                         AS usage_hours,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -271,7 +271,7 @@ def collect_all(regions: list, account_id: str, d1_date: date) -> dict:
             'spot_prices':      dict,  # {instance_type: {region: float}}  시간당 Spot 단가
         }
     """
-    athena = boto3.client('athena', region_name='ap-northeast-2')
+    athena = boto3.client('athena', region_name=_ATHENA_REGION)
     spot_d1, spot_d2, spot_mtd = collect_spot_cost_cur(athena, d1_date)
 
     instance_cost = collect_instance_cost_cur(athena, d1_date)
