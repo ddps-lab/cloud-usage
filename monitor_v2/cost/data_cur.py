@@ -135,7 +135,7 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
         GROUP BY product_product_name
-        HAVING SUM(line_item_unblended_cost) > 0.01
+        HAVING SUM(line_item_unblended_cost) > 0
         ORDER BY cost DESC
     """
     rows = _run_query(athena, sql)
