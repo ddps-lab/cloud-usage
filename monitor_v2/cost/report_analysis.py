@@ -89,7 +89,6 @@ def _build_main3(analysis: dict) -> list:
     anomaly_stats  = analysis.get('anomaly_stats', {})
     lm_total       = analysis.get('lm_total', 0.0)
     lm_date        = analysis.get('lm_date')
-    mtd_ratio_info = analysis.get('mtd_ratio_info', {})
 
     hist_days   = anomaly_stats.get('hist_days', 0) if anomaly_stats else 0
     lm_lbl      = _lm_diff_label(d1_total, lm_total)
@@ -105,13 +104,6 @@ def _build_main3(analysis: dict) -> list:
         f"*30일 평균 대비*\n{lbl_30}",
         f"*전월 동일일({lm_date_str}) 대비*\n`{lm_lbl}`",
     ]
-    if mtd_ratio_info and mtd_ratio_info.get('available'):
-        m = mtd_ratio_info
-        fields.append(
-            f"*이달 소진 현황*\n"
-            f"`${m['mtd_this']:,.0f}` / `${m['projected_total']:,.0f}` "
-            f"({m['mtd_ratio']:.1%})"
-        )
 
     return [
         _header(f"AWS 비용 변화 분석  |  {d1_date}  |  {ACCOUNT_NAME}"),

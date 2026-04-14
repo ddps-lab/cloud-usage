@@ -153,7 +153,7 @@ def _generate_spot_ai_summary(
         body    = json.dumps({
             'system':   [{'text': _SPOT_SYSTEM_PROMPT}],
             'messages': [{'role': 'user', 'content': [{'text': user_message}]}],
-            'inferenceConfig': {'max_new_tokens': 400, 'temperature': 0},
+            'inferenceConfig': {'max_new_tokens': 800, 'temperature': 0},
         })
         resp   = bedrock.invoke_model(
             modelId=_BEDROCK_MODEL_ID,
