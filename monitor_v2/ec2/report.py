@@ -28,7 +28,7 @@ from ..utils.blocks import (
     split_by_aggregate as _split_by_aggregate,
     calc_change, fmt_change, EC2_SERVICES,
 )
-from .iam_resolver import build_instance_creator_map, get_slack_user_id
+from .iam_resolver import get_slack_user_id
 from ..slack import client as slack
 
 ACCOUNT_NAME        = os.environ.get('ACCOUNT_NAME', 'hyu-ddps')
@@ -661,14 +661,13 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
         fallback_text=f"EC2 Instance Report {d1_date} / {ACCOUNT_NAME}",
     )
 
-    # creator_map 조회 (CloudTrail 기반)
-    all_instance_ids = [
-        inst['instance_id']
+    # creator_map: EC2 태그(aws:createdBy) 기반
+    creator_map = {
+        inst['instance_id']: inst['iam_user']
         for instances in ec2_data['instances'].values()
         for inst in instances
-    ]
-    regions     = list(ec2_data['instances'].keys())
-    creator_map = build_instance_creator_map(all_instance_ids, regions)
+        if inst.get('iam_user')
+    }
 
     # Thread 1: 헤더 메시지
     total_instances = sum(len(v) for v in ec2_data['instances'].values())
