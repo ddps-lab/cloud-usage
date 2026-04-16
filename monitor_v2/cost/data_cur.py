@@ -162,8 +162,6 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         SELECT
             product_product_name                                                AS service,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -172,20 +170,8 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
@@ -199,8 +185,6 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -209,20 +193,8 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
@@ -300,8 +272,6 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         SELECT
             product_product_name                                                AS service,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -310,20 +280,8 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
@@ -338,8 +296,6 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -348,20 +304,8 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')

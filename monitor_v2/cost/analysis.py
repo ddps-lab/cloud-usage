@@ -29,7 +29,7 @@ import boto3
 import logging
 from datetime import date, timedelta
 
-from .data_cur import _run_query, _partition, _ATHENA_DATABASE
+from .data_cur import _run_query, _partition, _ATHENA_DATABASE, _ATHENA_REGION
 
 log = logging.getLogger(__name__)
 
@@ -853,7 +853,7 @@ def collect_all(d1_date: date) -> dict:
         }
     """
     d2_date = d1_date - timedelta(days=1)
-    athena  = boto3.client('athena', region_name='ap-northeast-2')
+    athena  = boto3.client('athena', region_name=_ATHENA_REGION)
 
     service_rows    = fetch_service_diff(athena, d1_date, d2_date)
     usage_type_rows = fetch_usage_type_diff(athena, d1_date, d2_date)
