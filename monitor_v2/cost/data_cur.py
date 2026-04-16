@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 _ATHENA_DATABASE        = os.environ.get('ATHENA_DATABASE')
 _ATHENA_OUTPUT_LOCATION = os.environ.get('ATHENA_OUTPUT_LOCATION')
 _ATHENA_WORKGROUP       = os.environ.get('ATHENA_WORKGROUP', 'primary')
+_ATHENA_REGION          = os.environ.get('ATHENA_REGION', 'ap-northeast-2')
 
 _POLL_INTERVAL = 1.5   # seconds
 _MAX_WAIT      = 120   # seconds
@@ -130,12 +131,12 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
         SELECT
             product_product_name                  AS service,
             SUM(line_item_unblended_cost)         AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
         GROUP BY product_product_name
-        HAVING SUM(line_item_unblended_cost) > 0.01
+        HAVING SUM(line_item_unblended_cost) > 0
         ORDER BY cost DESC
     """
     rows = _run_query(athena, sql)
@@ -161,8 +162,6 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         SELECT
             product_product_name                                                AS service,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -171,26 +170,14 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
             END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -198,8 +185,6 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -208,20 +193,8 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
@@ -257,7 +230,7 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -299,8 +272,6 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         SELECT
             product_product_name                                                AS service,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -309,26 +280,14 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
             END                                                                 AS creator,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -337,8 +296,6 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         GROUP BY
             product_product_name,
             CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
                 WHEN product_product_name = 'AWS Data Transfer'
                     THEN '[공통] Data Transfer'
                 WHEN product_product_name = 'AWS Cost Explorer'
@@ -347,20 +304,8 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
                     THEN '[공통] Support'
                 WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                     THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
                 WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
                     THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
                 WHEN line_item_line_item_type = 'Usage'
                     THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
                 ELSE CONCAT(product_product_name, ' - 기타')
@@ -400,7 +345,7 @@ def fetch_mtd_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -434,7 +379,7 @@ def fetch_mtd_total_cur(athena, d1_date: date) -> float:
     year, month = _partition(d1_date)
     sql = f"""
         SELECT SUM(line_item_unblended_cost) AS mtd_total
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
@@ -472,7 +417,7 @@ def collect_all(today_kst: date) -> dict:
             'forecast':       float,  # CE API (0.0 = 예측 불가)
         }
     """
-    athena = boto3.client('athena', region_name='ap-northeast-2')
+    athena = boto3.client('athena', region_name=_ATHENA_REGION)
     ce     = boto3.client('ce',     region_name='us-east-1')
 
     d1_date = today_kst #- timedelta(days=1)

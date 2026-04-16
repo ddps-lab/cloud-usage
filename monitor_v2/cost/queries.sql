@@ -91,20 +91,8 @@ SELECT
             THEN '[공통] Support'
         WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
             THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-            THEN CONCAT('[username] ', resource_tags_user_username)
-        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-            THEN CONCAT('[requester] ', resource_tags_user_requester)
-        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-            THEN CONCAT('[project] ', resource_tags_user_project)
-        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
         WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
             THEN resource_tags_user_name
-        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-            THEN CONCAT('[environment] ', resource_tags_user_environment)
         WHEN line_item_line_item_type = 'Usage'
             THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
         ELSE CONCAT(product_product_name, ' - 기타')
@@ -126,20 +114,8 @@ GROUP BY
             THEN '[공통] Support'
         WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
             THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-        WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-            THEN CONCAT('[username] ', resource_tags_user_username)
-        WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-            THEN CONCAT('[requester] ', resource_tags_user_requester)
-        WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-            THEN CONCAT('[project] ', resource_tags_user_project)
-        WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-            THEN CONCAT('[project_name] ', resource_tags_user_project_name)
         WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
             THEN resource_tags_user_name
-        WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-            THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-        WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-            THEN CONCAT('[environment] ', resource_tags_user_environment)
         WHEN line_item_line_item_type = 'Usage'
             THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
         ELSE CONCAT(product_product_name, ' - 기타')
@@ -402,6 +378,209 @@ SELECT
                THEN line_item_unblended_cost ELSE 0 END)
   ) DESC
   LIMIT 10;
+
+
+-- -----------------------------------------------------------------------------
+-- Q12. collect_instance_cost_cur (ec2/data_cur.py)
+--      인스턴스 ID별 D-1 On-Demand EC2 비용 + 실 사용 시간 (CUR 기반)
+--      Spot 전환 절감 분석용. BoxUsage 행만 대상 (On-Demand 인스턴스만 포함).
+--
+--      iam_user: resource_tags_aws_created_by → SPLIT_PART(..., ':', 3)
+--                예: 'IAMUser:AIDAXXX:alice' → 'alice'
+--      usage_hours: line_item_usage_amount 합산 (시간 단위)
+--      cost:        line_item_unblended_cost 합산 (USD)
+--
+--      spot_estimate = usage_hours × describe_spot_price_history 결과
+--      savings       = cost - spot_estimate
+-- -----------------------------------------------------------------------------
+SELECT
+    line_item_resource_id                                               AS instance_id,
+    product_instance_type                                               AS instance_type,
+    COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
+    SPLIT_PART(COALESCE(resource_tags_aws_created_by, ''), ':', 3)     AS iam_user,
+    SUM(line_item_usage_amount)                                         AS usage_hours,
+    SUM(line_item_unblended_cost)                                       AS cost
+FROM hyu_ddps_logs.cur_logs
+WHERE year  = '{year}'
+  AND month = '{month}'
+  AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+  AND line_item_resource_id LIKE 'i-%'
+  AND product_instance_type != ''
+  AND line_item_usage_type  LIKE '%BoxUsage%'
+GROUP BY
+    line_item_resource_id,
+    product_instance_type,
+    COALESCE(NULLIF(product_region_code, ''), 'global'),
+    SPLIT_PART(COALESCE(resource_tags_aws_created_by, ''), ':', 3)
+HAVING SUM(line_item_unblended_cost) > 0;
+
+
+-- -----------------------------------------------------------------------------
+-- Q13. fetch_weekend_ec2_by_week (분석용 — query.py)
+--      EC2 + EC2-Other 서비스의 주말(토·일) 비용을 주 단위로 집계.
+--
+--      대상 기간: 2026년 3월 ~ 4월
+--      대상 요일: day_of_week=6(토), day_of_week=7(일)  ← Presto/Athena 기준
+--                 (1=월 … 6=토 … 7=일)
+--      EC2 서비스:
+--        - 'Amazon Elastic Compute Cloud - Compute'  (인스턴스 계산 비용)
+--        - 'Amazon Elastic Compute Cloud'
+--        - 'Amazon EC2'
+--        - 'EC2 - Other'                             (EBS·NAT·전송 등)
+--
+--      출력 컬럼:
+--        week_start   해당 주 월요일 (date_trunc 기준)
+--        saturday     해당 주 토요일 (week_start + 5일)
+--        sunday       해당 주 일요일 (week_start + 6일)
+--        ec2_sat      EC2 Compute 토요일 비용
+--        ec2_sun      EC2 Compute 일요일 비용
+--        ec2_weekend  EC2 Compute 주말 합계
+--        other_sat    EC2-Other 토요일 비용
+--        other_sun    EC2-Other 일요일 비용
+--        other_weekend EC2-Other 주말 합계
+--        weekend_total EC2 전체 주말 합계
+-- -----------------------------------------------------------------------------
+SELECT
+    DATE(date_trunc('week', DATE(line_item_usage_start_date)))
+                                                                        AS week_start,
+    DATE(date_trunc('week', DATE(line_item_usage_start_date))) + INTERVAL '5' DAY
+                                                                        AS saturday,
+    DATE(date_trunc('week', DATE(line_item_usage_start_date))) + INTERVAL '6' DAY
+                                                                        AS sunday,
+    SUM(CASE
+        WHEN product_product_name IN (
+            'Amazon Elastic Compute Cloud - Compute',
+            'Amazon Elastic Compute Cloud',
+            'Amazon EC2'
+        ) AND day_of_week(DATE(line_item_usage_start_date)) = 6
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS ec2_sat,
+    SUM(CASE
+        WHEN product_product_name IN (
+            'Amazon Elastic Compute Cloud - Compute',
+            'Amazon Elastic Compute Cloud',
+            'Amazon EC2'
+        ) AND day_of_week(DATE(line_item_usage_start_date)) = 7
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS ec2_sun,
+    SUM(CASE
+        WHEN product_product_name IN (
+            'Amazon Elastic Compute Cloud - Compute',
+            'Amazon Elastic Compute Cloud',
+            'Amazon EC2'
+        )
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS ec2_weekend,
+    SUM(CASE
+        WHEN product_product_name = 'EC2 - Other'
+         AND day_of_week(DATE(line_item_usage_start_date)) = 6
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS other_sat,
+    SUM(CASE
+        WHEN product_product_name = 'EC2 - Other'
+         AND day_of_week(DATE(line_item_usage_start_date)) = 7
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS other_sun,
+    SUM(CASE
+        WHEN product_product_name = 'EC2 - Other'
+        THEN line_item_unblended_cost ELSE 0
+    END)                                                                AS other_weekend,
+    SUM(line_item_unblended_cost)                                       AS weekend_total
+FROM hyu_ddps_logs.cur_logs
+WHERE year  = '2026'
+  AND month IN ('3', '4')
+  AND product_product_name IN (
+      'Amazon Elastic Compute Cloud - Compute',
+      'Amazon Elastic Compute Cloud',
+      'Amazon EC2',
+      'EC2 - Other'
+  )
+  AND day_of_week(DATE(line_item_usage_start_date)) IN (6, 7)
+GROUP BY date_trunc('week', DATE(line_item_usage_start_date))
+HAVING SUM(line_item_unblended_cost) > 0
+ORDER BY week_start;
+
+
+-- -----------------------------------------------------------------------------
+-- Q14. fetch_weekday_ec2_by_week (분석용)
+--      EC2 + EC2-Other 서비스의 평일(월~금) 비용을 주 단위로 집계하고
+--      LAG 윈도우 함수로 전주 대비 변화를 함께 표시한다.
+--
+--      대상 기간: 2026년 3월 ~ 4월
+--      대상 요일: day_of_week IN (1,2,3,4,5)  ← 월=1 … 금=5  (Presto/Athena 기준)
+--
+--      집계 컬럼:
+--        week_start      해당 주 월요일
+--        friday          해당 주 금요일 (week_start + 4일)
+--        ec2_weekday     EC2 Compute 평일 합계
+--        other_weekday   EC2-Other 평일 합계
+--        weekday_total   EC2 전체 평일 합계
+--
+--      전주 비교 컬럼 (LAG):
+--        prev_ec2_weekday    전주 EC2 Compute 평일 합계
+--        prev_other_weekday  전주 EC2-Other 평일 합계
+--        prev_weekday_total  전주 전체 평일 합계
+--        diff_ec2            ec2_weekday   - prev_ec2_weekday   (증가 +, 감소 -)
+--        diff_other          other_weekday - prev_other_weekday
+--        diff_total          weekday_total - prev_weekday_total
+--        pct_total           diff_total / prev_weekday_total × 100 (NULL = 첫 주)
+-- -----------------------------------------------------------------------------
+WITH weekday_base AS (
+    SELECT
+        DATE(date_trunc('week', DATE(line_item_usage_start_date)))
+                                                                        AS week_start,
+        DATE(date_trunc('week', DATE(line_item_usage_start_date))) + INTERVAL '4' DAY
+                                                                        AS friday,
+        SUM(CASE
+            WHEN product_product_name IN (
+                'Amazon Elastic Compute Cloud - Compute',
+                'Amazon Elastic Compute Cloud',
+                'Amazon EC2'
+            )
+            THEN line_item_unblended_cost ELSE 0
+        END)                                                            AS ec2_weekday,
+        SUM(CASE
+            WHEN product_product_name = 'EC2 - Other'
+            THEN line_item_unblended_cost ELSE 0
+        END)                                                            AS other_weekday,
+        SUM(line_item_unblended_cost)                                   AS weekday_total
+    FROM hyu_ddps_logs.cur_logs
+    WHERE year  = '2026'
+      AND month IN ('3', '4')
+      AND product_product_name IN (
+          'Amazon Elastic Compute Cloud - Compute',
+          'Amazon Elastic Compute Cloud',
+          'Amazon EC2',
+          'EC2 - Other'
+      )
+      AND day_of_week(DATE(line_item_usage_start_date)) IN (1, 2, 3, 4, 5)
+    GROUP BY date_trunc('week', DATE(line_item_usage_start_date))
+    HAVING SUM(line_item_unblended_cost) > 0
+)
+SELECT
+    week_start,
+    friday,
+    ec2_weekday,
+    other_weekday,
+    weekday_total,
+    LAG(ec2_weekday)    OVER (ORDER BY week_start)                      AS prev_ec2_weekday,
+    LAG(other_weekday)  OVER (ORDER BY week_start)                      AS prev_other_weekday,
+    LAG(weekday_total)  OVER (ORDER BY week_start)                      AS prev_weekday_total,
+    ec2_weekday   - LAG(ec2_weekday)   OVER (ORDER BY week_start)       AS diff_ec2,
+    other_weekday - LAG(other_weekday) OVER (ORDER BY week_start)       AS diff_other,
+    weekday_total - LAG(weekday_total) OVER (ORDER BY week_start)       AS diff_total,
+    CASE
+        WHEN LAG(weekday_total) OVER (ORDER BY week_start) IS NOT NULL
+         AND LAG(weekday_total) OVER (ORDER BY week_start) > 0
+        THEN ROUND(
+            (weekday_total - LAG(weekday_total) OVER (ORDER BY week_start))
+            / LAG(weekday_total) OVER (ORDER BY week_start) * 100,
+            1
+        )
+        ELSE NULL
+    END                                                                 AS pct_total
+FROM weekday_base
+ORDER BY week_start;
 
 
 -- -----------------------------------------------------------------------------

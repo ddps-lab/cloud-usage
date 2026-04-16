@@ -37,7 +37,7 @@ from monitor_v2.ec2.report_cur import send_ec2_cur_report
 KST = timezone(timedelta(hours=9))
 
 if __name__ == "__main__":
-    today_kst = datetime.now(KST).date()
+    today_kst = datetime.now(KST).date() - timedelta(days=1)
 
     sts        = boto3.client('sts')
     account_id = sts.get_caller_identity()['Account']
