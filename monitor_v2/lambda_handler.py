@@ -46,8 +46,7 @@ def lambda_handler(event, context):
 
         # ── Main 3: 비용 변화 AI 분석 (08:15 KST, 독립 실행) ────────────
         if report_type == 'analysis':
-            from datetime import timedelta as td
-            d1_date = today_kst - td(days=1)
+            d1_date = today_kst
             send_main3_report(d1_date)
             return 200
 

@@ -21,6 +21,8 @@ dependencies = [
     "requests>=2.28.0",           # HTTP library
     "adal>=1.2.7",                # Azure AD authentication
     "slack_sdk>=3.19.0",          # Slack Bot Token API (monitor_v2)
+    "pandas>=2.3.3",
+    "pyarrow>=21.0.0",
 ]
 
 [tool.setuptools.packages.find]

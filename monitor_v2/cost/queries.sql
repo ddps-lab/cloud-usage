@@ -62,7 +62,6 @@ WHERE year  = '2026'
   AND month = '4'
   AND DATE(line_item_usage_start_date) = DATE('2026-04-04')
 GROUP BY product_product_name
-HAVING SUM(line_item_unblended_cost) > 0.01
 ORDER BY cost DESC;
 
 
