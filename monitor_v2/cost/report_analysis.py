@@ -15,6 +15,7 @@ Main 3 메시지를 Slack에 발송한다.
 """
 
 import os
+import re
 from datetime import date
 
 from ..slack import client as slack
@@ -57,6 +58,40 @@ def _resource_rows(rows: list) -> list:
     ] or [["(데이터 없음)", "", "", "", "", "", ""]]
 
 
+def _split_summary(summary: str) -> tuple:
+    """
+    LLM 요약 텍스트를 (opening, yesterday, mtd) 3-tuple 로 분할.
+
+    LLM 출력 구조:
+        <opening line(s)>
+
+        ■ 어제 비용 분석
+        <yesterday body>
+
+        ■ 이번 달 누계 분석
+        <mtd body>
+
+    Returns:
+        (opening, yesterday_body, mtd_body) — 각 항목은 헤더 제외 본문만.
+        섹션이 없으면 빈 문자열.
+    """
+    parts = re.split(r'\n\s*■\s*', summary.strip())
+    opening = parts[0].strip() if parts else summary.strip()
+
+    yesterday_body, mtd_body = '', ''
+    for part in parts[1:]:
+        if not part.strip():
+            continue
+        head, _, body = part.partition('\n')
+        head = head.strip()
+        body = body.strip()
+        if '어제' in head:
+            yesterday_body = body
+        elif '누계' in head:
+            mtd_body = body
+    return opening, yesterday_body, mtd_body
+
+
 def _build_main3(analysis: dict) -> list:
     d1_date          = analysis['d1_date']
     d1_total         = analysis['d1_total']
@@ -80,12 +115,24 @@ def _build_main3(analysis: dict) -> list:
         ),
     ]
 
+    opening, yesterday_body, mtd_body = _split_summary(summary)
+
+    summary_blocks = [_section("*AI 요약*")]
+    if opening:
+        summary_blocks.append(_section(opening))
+    if yesterday_body:
+        summary_blocks.append(_section(f"*■ 어제 비용 분석*\n{yesterday_body}"))
+    if mtd_body:
+        summary_blocks.append(_section(f"*■ 이번 달 누계 분석*\n{mtd_body}"))
+    if not (opening or yesterday_body or mtd_body):
+        # 분할 실패 fallback — 원문 그대로
+        summary_blocks.append(_section(summary))
+
     return [
         _header(f"AWS 비용 변화 분석  |  {d1_date}  |  {ACCOUNT_NAME}"),
         _fields_section(fields),
         _divider(),
-        _section("*AI 요약*"),
-        _section(summary),
+        *summary_blocks,
         _divider(),
         *_table_section(
             f"*[ 서비스별 비용 변화 Top {len(service_rows)} ]*",
