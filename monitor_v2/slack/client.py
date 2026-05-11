@@ -25,6 +25,8 @@ import os
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from ..utils.blocks import split_by_aggregate as _split_by_aggregate
+
 BOT_TOKEN  = os.environ['SLACK_BOT_TOKEN']
 CHANNEL_ID = os.environ['SLACK_CHANNEL_ID']
 
@@ -54,21 +56,30 @@ def post_blocks(blocks: list, fallback_text: str = '', thread_ts: str = None) ->
     """
     Block Kit 블록 배열을 채널에 전송한다.
 
+    Slack은 한 메시지 내 markdown 블록 합산 10,000자를 초과하면 invalid_blocks 에러를 반환한다.
+    이를 방지하기 위해 split_by_aggregate()로 블록을 안전한 단위로 분할해 순차 발송한다.
+    분할이 일어나지 않는 경우 동작은 단일 발송과 동일하다.
+
     Args:
         blocks:        slack_sdk Block 객체 또는 dict 리스트
         fallback_text: 알림 미리보기에 표시될 텍스트 (blocks 미지원 환경 대비)
         thread_ts:     스레드로 달 경우 부모 메시지의 ts. None이면 새 메인 메시지.
 
     Returns:
-        전송된 메시지의 ts 문자열
+        첫 번째로 전송된 메시지의 ts 문자열 (스레드 부모로 재사용 가능)
     """
     serialized = [b.to_dict() if hasattr(b, 'to_dict') else b for b in blocks]
-    kwargs = {'channel': CHANNEL_ID, 'blocks': serialized, 'text': fallback_text}
-    if thread_ts:
-        kwargs['thread_ts'] = thread_ts
+    batches    = _split_by_aggregate(serialized)
 
-    response = _client.chat_postMessage(**kwargs)
-    return response['ts']
+    first_ts = None
+    for batch in batches:
+        kwargs = {'channel': CHANNEL_ID, 'blocks': batch, 'text': fallback_text}
+        if thread_ts:
+            kwargs['thread_ts'] = thread_ts
+        response = _client.chat_postMessage(**kwargs)
+        if first_ts is None:
+            first_ts = response['ts']
+    return first_ts
 
 
 def send_dm(slack_user_id: str, text: str) -> None:
