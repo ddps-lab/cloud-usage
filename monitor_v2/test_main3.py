@@ -25,7 +25,7 @@ def main():
         d1_date = datetime.strptime(args.date, '%Y-%m-%d').date()
     else:
         from datetime import timedelta
-        d1_date = date.today() - timedelta(days=2)
+        d1_date = date.today() - timedelta(days=1)
 
     print(f"[test_main3] d1_date={d1_date}")
 
