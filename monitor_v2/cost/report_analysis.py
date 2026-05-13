@@ -6,15 +6,16 @@ Main 3 메시지를 Slack에 발송한다.
 
 구성:
     헤더        — "AWS 비용 변화 분석 | {d1_date} | {account}"
-    요약 수치   — 어제 총비용 / 전날 대비 변화
-    Q9  테이블  — 서비스별 비용 변화 Top 10
-    Q10 테이블  — 리소스 타입별 비용 변화 Top 10
-    Q11 테이블  — 리소스 ID별 비용 변화 Top 10
+    요약 수치   — 어제 총비용 / 이번 달 누계(N일) / 월말 예상
+    Q9  테이블  — 서비스별 비용 변화 Top
+    Q10 테이블  — 리소스 타입별 비용 변화 Top
+    Q11 테이블  — 리소스 ID별 비용 변화 Top
     AI 요약     — Nova Micro 요약 텍스트
     context     — 분석 기준 날짜 / 데이터 소스 / 모델
 """
 
 import os
+import re
 from datetime import date
 
 from ..slack import client as slack
@@ -57,24 +58,81 @@ def _resource_rows(rows: list) -> list:
     ] or [["(데이터 없음)", "", "", "", "", "", ""]]
 
 
+def _split_summary(summary: str) -> tuple:
+    """
+    LLM 요약 텍스트를 (opening, yesterday, mtd) 3-tuple 로 분할.
+
+    LLM 출력 구조:
+        <opening line(s)>
+
+        ■ 어제 비용 분석
+        <yesterday body>
+
+        ■ 이번 달 누계 분석
+        <mtd body>
+
+    Returns:
+        (opening, yesterday_body, mtd_body) — 각 항목은 헤더 제외 본문만.
+        섹션이 없으면 빈 문자열.
+    """
+    parts = re.split(r'\n\s*■\s*', summary.strip())
+    opening = parts[0].strip() if parts else summary.strip()
+
+    yesterday_body, mtd_body = '', ''
+    for part in parts[1:]:
+        if not part.strip():
+            continue
+        head, _, body = part.partition('\n')
+        head = head.strip()
+        body = body.strip()
+        if '어제' in head:
+            yesterday_body = body
+        elif '누계' in head:
+            mtd_body = body
+    return opening, yesterday_body, mtd_body
+
+
 def _build_main3(analysis: dict) -> list:
-    d1_date       = analysis['d1_date']
-    d2_date       = analysis['d2_date']
-    d1_total      = analysis['d1_total']
-    d2_total      = analysis['d2_total']
-    diff          = d1_total - d2_total
-    pct           = (diff / d2_total * 100) if d2_total else 0.0
-    summary       = analysis['summary']
-    service_rows  = analysis['service_rows']
-    usage_rows    = analysis['usage_type_rows']
-    resource_rows = analysis['resource_rows']
+    d1_date          = analysis['d1_date']
+    d1_total         = analysis['d1_total']
+    summary          = analysis['summary']
+    service_rows     = analysis['service_rows']
+    usage_rows       = analysis['usage_type_rows']
+    resource_rows    = analysis['resource_rows']
+    mtd_total        = analysis.get('mtd_total', 0.0)
+    mtd_days_elapsed = analysis.get('mtd_days_elapsed', 0)
+    forecast_total   = analysis.get('forecast_total', 0.0)
+
+    fields = [
+        f"*어제({d1_date}) 총비용*\n`${d1_total:,.2f}`",
+        (
+            f"*이번 달 누계 ({mtd_days_elapsed}일 경과)*\n`${mtd_total:,.2f}`"
+            if mtd_total > 0 else "*이번 달 누계*\n`데이터 없음`"
+        ),
+        (
+            f"*월말 예상*\n`${forecast_total:,.2f}`"
+            if forecast_total > 0 else "*월말 예상*\n`예측 불가`"
+        ),
+    ]
+
+    opening, yesterday_body, mtd_body = _split_summary(summary)
+
+    summary_blocks = [_section("*AI 요약*")]
+    if opening:
+        summary_blocks.append(_section(opening))
+    if yesterday_body:
+        summary_blocks.append(_section(f"*■ 어제 비용 분석*\n{yesterday_body}"))
+    if mtd_body:
+        summary_blocks.append(_section(f"*■ 이번 달 누계 분석*\n{mtd_body}"))
+    if not (opening or yesterday_body or mtd_body):
+        # 분할 실패 fallback — 원문 그대로
+        summary_blocks.append(_section(summary))
 
     return [
         _header(f"AWS 비용 변화 분석  |  {d1_date}  |  {ACCOUNT_NAME}"),
-        _fields_section([
-            f"*어제({d1_date}) 총비용*\n`${d1_total:,.2f}`",
-            f"*전날({d2_date}) 대비*\n`{_fmt_diff(diff)}` `({pct:+.1f}%)`",
-        ]),
+        _fields_section(fields),
+        _divider(),
+        *summary_blocks,
         _divider(),
         *_table_section(
             f"*[ 서비스별 비용 변화 Top {len(service_rows)} ]*",
@@ -93,9 +151,6 @@ def _build_main3(analysis: dict) -> list:
             ["서비스", "타입", "리소스 ID", "생성자", "어제", "그제", "변화"],
             _resource_rows(resource_rows),
         ),
-        _divider(),
-        _section("*AI 요약*"),
-        _section(summary),
         _context(
             f"분석 기준: {d1_date}  |  데이터 소스: CUR  |  모델: {_BEDROCK_MODEL_ID}"
         ),
@@ -104,10 +159,10 @@ def _build_main3(analysis: dict) -> list:
 
 def send_main3_report(d1_date: date) -> None:
     """
-    Main 3 발송.
+    Main 3 발송. mtd_this / forecast 는 collect_all 내부에서 수집한다.
 
     Args:
-        d1_date: 리포트 기준일 (lambda_handler에서 cost_data['d1_date'] 전달)
+        d1_date: 리포트 기준일
     """
     analysis = collect_all(d1_date)
     slack.post_blocks(

@@ -45,6 +45,7 @@ PROJECT_STRUCTURE.md
 
 # Environment variables (sensitive)
 .env
+.env**
 .env.local
 *.pem
 *.key
@@ -74,4 +75,5 @@ __pypackages__/
 
 # 실제 변수값 (민감 정보 포함)
 **/terraform.tfvars
+**.tfvars
 **/*.auto.tfvars
