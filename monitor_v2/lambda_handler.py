@@ -32,24 +32,46 @@ def lambda_handler(event, context):
         'today'     → today_kst 그대로 → d1_date = today - 1  (KST 22:00, CUR 당일 반영 후)
         'yesterday' → today_kst - 1   → d1_date = today - 2  (KST 08:00, CUR 전날까지만 반영)
 
+    에러 처리:
+        각 단계(init / cost_collect / cost_report / ec2_collect / ec2_report / ai_analysis)를
+        개별 try/except로 감싼다. 단계 실패 시 slack.post_error로 알림을 보내고
+        had_error 플래그를 세운 뒤 가능한 후속 단계는 계속 진행한다 (부분 실패 허용).
+        cost_collect는 EC2 단계의 선행 의존이라 실패 시 EC2 단계를 건너뛴다.
+
     Returns:
-        200 (성공) / 500 (실패)
+        200 (전 단계 성공) / 500 (한 단계라도 실패)
     """
     event = event or {}
     report_type = event.get('report_type', 'all')
     date_mode   = event.get('date_mode', 'today')
 
+    base_meta = {'report_type': report_type}
+    had_error = False
+
+    # ── 날짜 산정 ─────────────────────────────────────────────────
     try:
         today_kst = datetime.now(KST).date()
         if date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
+    except Exception as e:
+        slack.post_error(context='init/date', error=e, meta=base_meta)
+        return 500
 
-        # ── Main 3: 비용 변화 AI 분석 (08:15 KST, 독립 실행) ────────────
-        if report_type == 'analysis':
-            d1_date = today_kst
-            send_main3_report(d1_date)
+    # ── Main 3: 비용 변화 AI 분석 (08:15 KST, 독립 실행) ────────────
+    if report_type == 'analysis':
+        try:
+            send_main3_report(today_kst)
             return 200
+        except Exception as e:
+            slack.post_error(
+                context='ai_analysis',
+                error=e,
+                meta={**base_meta, 'date': str(today_kst)},
+            )
+            return 500
 
+    # ── 공통 초기화: account / regions ──────────────────────────
+    try:
         sts        = boto3.client('sts')
         account_id = sts.get_caller_identity()['Account']
 
@@ -63,22 +85,43 @@ def lambda_handler(event, context):
                 }]
             )['Regions']
         ]
-
-        # ── 데이터 수집 (CUR / Athena 기반, forecast만 CE 사용) ──────────
-        cost_data = collect_cost_data(today_kst)
-
-        # ── Slack 발송 ───────────────────────────────────────────────────
-        if report_type in ('cost', 'all'):
-            send_cur_report(cost_data)
-
-        if report_type in ('ec2', 'all'):
-            ec2_data = collect_ec2_data(ec2_regions, account_id, cost_data['d1_date'])
-            send_ec2_cur_report(cost_data, ec2_data)
-
-        return 200
-
     except Exception as e:
-        import traceback
-        slack.post_error(context="lambda_handler", error=e)
-        print(traceback.format_exc())
+        slack.post_error(context='init/aws_clients', error=e, meta=base_meta)
         return 500
+
+    base_meta['account_id'] = account_id
+
+    # ── Cost 데이터 수집 (CUR / Athena 기반, forecast만 CE 사용) ──
+    try:
+        cost_data = collect_cost_data(today_kst)
+    except Exception as e:
+        slack.post_error(context='cost_collect', error=e, meta=base_meta)
+        return 500
+
+    base_meta['date'] = str(cost_data.get('d1_date', ''))
+
+    # ── Cost 리포트 발송 (Main 1) ───────────────────────────────
+    if report_type in ('cost', 'all'):
+        try:
+            send_cur_report(cost_data)
+        except Exception as e:
+            slack.post_error(context='cost_report', error=e, meta=base_meta)
+            had_error = True
+
+    # ── EC2 수집 + 리포트 발송 (Main 2) ──────────────────────────
+    if report_type in ('ec2', 'all'):
+        ec2_data = None
+        try:
+            ec2_data = collect_ec2_data(ec2_regions, account_id, cost_data['d1_date'])
+        except Exception as e:
+            slack.post_error(context='ec2_collect', error=e, meta=base_meta)
+            had_error = True
+
+        if ec2_data is not None:
+            try:
+                send_ec2_cur_report(cost_data, ec2_data)
+            except Exception as e:
+                slack.post_error(context='ec2_report', error=e, meta=base_meta)
+                had_error = True
+
+    return 500 if had_error else 200

@@ -21,11 +21,17 @@ Incoming Webhook과의 차이:
 """
 
 import os
+import traceback as _traceback
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-from ..utils.blocks import split_by_aggregate as _split_by_aggregate
+from ..utils.blocks import (
+    split_by_aggregate as _split_by_aggregate,
+    header        as _header,
+    section       as _section,
+    fields_section as _fields_section,
+)
 
 BOT_TOKEN  = os.environ['SLACK_BOT_TOKEN']
 CHANNEL_ID = os.environ['SLACK_CHANNEL_ID']
@@ -101,13 +107,42 @@ def send_dm(slack_user_id: str, text: str) -> None:
         print(f"[DM 발송 실패] user={slack_user_id}, error={e.response['error']}")
 
 
-def post_error(context: str, error: Exception) -> None:
+def post_error(context: str, error: Exception, meta: dict = None) -> None:
     """
-    에러 발생 시 채널에 알림을 전송한다.
-    전송 자체가 실패해도 예외를 삼켜 Lambda 종료를 막지 않는다.
+    에러 발생 시 채널에 Block Kit 알림을 전송한다.
+
+    Args:
+        context: 에러 발생 단계 식별자 (예: 'cost_collect', 'ec2_report', 'ai_analysis')
+        error:   잡힌 예외 객체
+        meta:    추가 메타데이터 (report_type / date_mode / account_id / d1_date 등)
+
+    동작:
+        - 헤더 + 메타 필드(2열) + 에러 메시지 + traceback 마지막 10줄
+        - Block Kit 발송 실패 시 plain text 한 줄로 fallback
+        - 그래도 실패하면 조용히 삼켜 Lambda 종료를 막지 않는다.
     """
-    msg = f"[monitor_v2] 오류 발생\n컨텍스트: {context}\n오류: {str(error)}"
+    error_type = type(error).__name__
+    error_msg  = (str(error) or '(메시지 없음)')[:500]
+
+    tb_text  = ''.join(_traceback.format_exception(type(error), error, error.__traceback__))
+    tb_tail  = '\n'.join(tb_text.splitlines()[-10:])[:2500]
+
+    fields = [f"*단계*\n`{context}`", f"*에러 타입*\n`{error_type}`"]
+    for k, v in (meta or {}).items():
+        fields.append(f"*{k}*\n`{v}`")
+
+    blocks = [
+        _header("🚨 monitor_v2 오류"),
+        _fields_section(fields),
+        _section(f"*에러 메시지*\n```{error_msg}```"),
+        _section(f"*Traceback (last 10 lines)*\n```{tb_tail}```"),
+    ]
+
+    fallback = f"[monitor_v2] {context} 오류: {error_type}: {error_msg[:200]}"
     try:
-        post_message(msg)
+        post_blocks(blocks, fallback_text=fallback)
     except Exception:
-        pass
+        try:
+            post_message(fallback)
+        except Exception:
+            pass
