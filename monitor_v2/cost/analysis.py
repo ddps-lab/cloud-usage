@@ -1573,7 +1573,9 @@ def summarize(
 ) -> str:
     """
     Nova Micro에 비용 요약 요청.
-    실패 시 폴백 텍스트 반환 (Lambda 전체 실패 방지).
+
+    Bedrock 호출 실패 시 예외를 그대로 raise한다. 호출자(collect_all)가
+    이를 잡아 fallback 텍스트를 만들고 예외 객체는 llm_error로 보관한다.
     """
     user_message = _build_user_message(
         d1_date=d1_date,
@@ -1586,66 +1588,61 @@ def summarize(
         service_mtd=service_mtd,
         top_users_mtd=top_users_mtd,
     )
-    try:
-        bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
-        body = json.dumps({
-            'system':   [{'text': _SYSTEM_PROMPT}],
-            'messages': [{'role': 'user', 'content': [{'text': user_message}]}],
-            'inferenceConfig': {
-                # Nova Micro 의 최대 출력 토큰 (5,000) 까지 허용 — 2섹션 보고가 잘리지 않도록.
-                'max_new_tokens': 5000,
-                'temperature': 0,
-            },
-        })
-        resp   = bedrock.invoke_model(
-            modelId=_BEDROCK_MODEL_ID,
-            body=body,
-            contentType='application/json',
-            accept='application/json',
-        )
-        result = json.loads(resp['body'].read())
-        text   = result['output']['message']['content'][0]['text'].strip()
-        text   = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
+    body = json.dumps({
+        'system':   [{'text': _SYSTEM_PROMPT}],
+        'messages': [{'role': 'user', 'content': [{'text': user_message}]}],
+        'inferenceConfig': {
+            # Nova Micro 의 최대 출력 토큰 (5,000) 까지 허용 — 2섹션 보고가 잘리지 않도록.
+            'max_new_tokens': 5000,
+            'temperature': 0,
+        },
+    })
+    resp   = bedrock.invoke_model(
+        modelId=_BEDROCK_MODEL_ID,
+        body=body,
+        contentType='application/json',
+        accept='application/json',
+    )
+    result = json.loads(resp['body'].read())
+    text   = result['output']['message']['content'][0]['text'].strip()
+    text   = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
 
-        # 어색한 부정 진술 / 시스템 용어 노출이 LLM 출력에 들어왔을 경우 자동 제거.
-        # 시스템 프롬프트에 금지를 명시했으나 LLM이 어길 수 있으므로 방어적 후처리.
-        # 한 줄 단위로 매칭 — 해당 줄 전체 삭제.
-        bad_line_patterns = [
-            # 부정 진술 — "신규/새로/처음 + 없" 조합이면 줄 어디든 매칭, 줄 전체 삭제
-            r'^.*(?:신규|새로\s*비용|새로\s*발생|새로\s*등장|처음\s*등장|처음\s*발생).*없(?:습니다|음|으며|었습니다|었음).*$',
-            # "특이사항 ~" 도입어 + 부정 진술
-            r'^.*특이사항(?:으로|은)?.*없(?:습니다|음|으며).*$',
-            r'^\s*특이사항\s*없음\.?\s*$',
-            # 시스템 라벨 노출 — "관찰된 신호" 뒤 어떤 조사·동사가 와도 매칭
-            r'^.*관찰된\s*신호.*$',
-            r'^.*\[동일\s*사용자\].*$',
-            r'^.*\[페이스\].*$',
-            r'^.*\[묶음\].*$',
-            # 어색한 명사구
-            r'^.*(?:신규|발생)\s*항목(?:이|은|으로)?\s*없(?:습니다|음).*$',
-        ]
-        for pat in bad_line_patterns:
-            text = re.sub(pat, '', text, flags=re.MULTILINE)
+    # 어색한 부정 진술 / 시스템 용어 노출이 LLM 출력에 들어왔을 경우 자동 제거.
+    # 시스템 프롬프트에 금지를 명시했으나 LLM이 어길 수 있으므로 방어적 후처리.
+    # 한 줄 단위로 매칭 — 해당 줄 전체 삭제.
+    bad_line_patterns = [
+        # 부정 진술 — "신규/새로/처음 + 없" 조합이면 줄 어디든 매칭, 줄 전체 삭제
+        r'^.*(?:신규|새로\s*비용|새로\s*발생|새로\s*등장|처음\s*등장|처음\s*발생).*없(?:습니다|음|으며|었습니다|었음).*$',
+        # "특이사항 ~" 도입어 + 부정 진술
+        r'^.*특이사항(?:으로|은)?.*없(?:습니다|음|으며).*$',
+        r'^\s*특이사항\s*없음\.?\s*$',
+        # 시스템 라벨 노출 — "관찰된 신호" 뒤 어떤 조사·동사가 와도 매칭
+        r'^.*관찰된\s*신호.*$',
+        r'^.*\[동일\s*사용자\].*$',
+        r'^.*\[페이스\].*$',
+        r'^.*\[묶음\].*$',
+        # 어색한 명사구
+        r'^.*(?:신규|발생)\s*항목(?:이|은|으로)?\s*없(?:습니다|음).*$',
+    ]
+    for pat in bad_line_patterns:
+        text = re.sub(pat, '', text, flags=re.MULTILINE)
 
-        # 한글 typo 방어 — Nova Micro가 "수준" 을 "수줤"·"수즌" 등으로 잘못 출력하는 경우.
-        # 입력 라인에 "$N 수준" 형식이 들어가지만 LLM이 한글 자모를 잘못 합치는 케이스 방어.
-        text = re.sub(r'(\$[\d,\.]+)\s*(수줤|수즌|숮준|수즁)', r'\1 수준', text)
+    # 한글 typo 방어 — Nova Micro가 "수준" 을 "수줤"·"수즌" 등으로 잘못 출력하는 경우.
+    # 입력 라인에 "$N 수준" 형식이 들어가지만 LLM이 한글 자모를 잘못 합치는 케이스 방어.
+    text = re.sub(r'(\$[\d,\.]+)\s*(수줤|수즌|숮준|수즁)', r'\1 수준', text)
 
-        # 가독성: 한 문단 안에서 마침표 뒤 다음 문장 시작 글자가 오면 줄 바꿈 삽입.
-        # - "~다. 그 안에서는" → "~다.\n그 안에서는"  (호흡 끊음)
-        # - "$229.53은" 같은 숫자 안의 마침표는 다음에 공백이 없어 영향 없음
-        # - "$5.40를" 도 매칭 안 됨 (마침표 다음이 공백+글자가 아님)
-        # - "kernel-fusion-benchmark" 같은 영어 소문자 시작 문장도 잡도록 a-z 포함
-        text = re.sub(r'\. ([가-힣a-zA-Z$])', r'.\n\1', text)
+    # 가독성: 한 문단 안에서 마침표 뒤 다음 문장 시작 글자가 오면 줄 바꿈 삽입.
+    # - "~다. 그 안에서는" → "~다.\n그 안에서는"  (호흡 끊음)
+    # - "$229.53은" 같은 숫자 안의 마침표는 다음에 공백이 없어 영향 없음
+    # - "$5.40를" 도 매칭 안 됨 (마침표 다음이 공백+글자가 아님)
+    # - "kernel-fusion-benchmark" 같은 영어 소문자 시작 문장도 잡도록 a-z 포함
+    text = re.sub(r'\. ([가-힣a-zA-Z$])', r'.\n\1', text)
 
-        # 연속된 빈 줄을 한 줄로 정리
-        text = re.sub(r'\n{3,}', '\n\n', text)
+    # 연속된 빈 줄을 한 줄로 정리
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
-        return text.strip()
-
-    except Exception as e:
-        log.error("Bedrock 호출 실패: %s", e)
-        return f"LLM 분석 실패 (Bedrock 오류). 어제 총비용 ${d1_total:,.2f}."
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1684,6 +1681,7 @@ def collect_all(d1_date: date) -> dict:
             'mtd_days_elapsed':  int,
             'forecast_total':    float,
             'summary':           str,
+            'llm_error':         Exception | None,  # Bedrock 호출 실패 시 잡힌 예외
         }
     """
     d2_date = d1_date - timedelta(days=1)
@@ -1718,17 +1716,26 @@ def collect_all(d1_date: date) -> dict:
         forecast = 0.0
     forecast_total = mtd_total + forecast if forecast > 0 else 0.0
 
-    summary = summarize(
-        d1_date=d1_date,
-        d1_total=d1_total,
-        top_services=top_services,
-        new_costs=new_costs,
-        mtd_total=mtd_total,
-        mtd_days_elapsed=mtd_days_elapsed,
-        forecast_total=forecast_total,
-        service_mtd=service_mtd,
-        top_users_mtd=top_users_mtd,
-    )
+    # LLM 호출 실패 시 메인 메시지 발송은 fallback 텍스트로 진행하되,
+    # 잡은 예외 객체를 llm_error 로 보관해 호출자(send_main3_report)가
+    # 발송 후 별도 에러 알림을 만들 수 있도록 한다.
+    llm_error = None
+    try:
+        summary = summarize(
+            d1_date=d1_date,
+            d1_total=d1_total,
+            top_services=top_services,
+            new_costs=new_costs,
+            mtd_total=mtd_total,
+            mtd_days_elapsed=mtd_days_elapsed,
+            forecast_total=forecast_total,
+            service_mtd=service_mtd,
+            top_users_mtd=top_users_mtd,
+        )
+    except Exception as e:
+        log.error("Bedrock 호출 실패: %s", e)
+        summary   = f"LLM 분석 실패 (Bedrock 오류). 어제 총비용 ${d1_total:,.2f}."
+        llm_error = e
 
     return {
         'd1_date':          d1_date,
@@ -1746,4 +1753,5 @@ def collect_all(d1_date: date) -> dict:
         'mtd_days_elapsed': mtd_days_elapsed,
         'forecast_total':   forecast_total,
         'summary':          summary,
+        'llm_error':        llm_error,
     }

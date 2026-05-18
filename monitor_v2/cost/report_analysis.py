@@ -161,6 +161,11 @@ def send_main3_report(d1_date: date) -> None:
     """
     Main 3 발송. mtd_this / forecast 는 collect_all 내부에서 수집한다.
 
+    Bedrock 호출이 실패한 경우 fallback 텍스트가 포함된 메인 메시지를 먼저
+    발송한 뒤, 보관해 둔 예외(llm_error)를 그대로 raise 한다. 호출자
+    (lambda_handler 의 ai_analysis 단계) 가 이를 catch 해 slack.post_error 로
+    별도 에러 알림을 채널에 추가 발송한다.
+
     Args:
         d1_date: 리포트 기준일
     """
@@ -169,3 +174,7 @@ def send_main3_report(d1_date: date) -> None:
         _build_main3(analysis),
         fallback_text=f"AWS 비용 변화 분석 {d1_date} / {ACCOUNT_NAME}",
     )
+
+    llm_error = analysis.get('llm_error')
+    if llm_error is not None:
+        raise llm_error
