@@ -33,8 +33,11 @@ from ..utils.blocks import (
     fields_section as _fields_section,
 )
 
-BOT_TOKEN  = os.environ['SLACK_BOT_TOKEN']
-CHANNEL_ID = os.environ['SLACK_CHANNEL_ID']
+BOT_TOKEN    = os.environ['SLACK_BOT_TOKEN']
+CHANNEL_ID   = os.environ['SLACK_CHANNEL_ID']
+# AWS 계정 별칭 (표시용). Terraform 의 var.account_name 에서 주입.
+# 미설정 시에도 에러 알림 자체는 보내야 하므로 'unknown-account' 로 폴백.
+ACCOUNT_NAME = os.environ.get('ACCOUNT_NAME', 'unknown-account')
 
 _client = WebClient(token=BOT_TOKEN)
 
@@ -132,13 +135,13 @@ def post_error(context: str, error: Exception, meta: dict = None) -> None:
         fields.append(f"*{k}*\n`{v}`")
 
     blocks = [
-        _header("🚨 monitor_v2 오류"),
+        _header(f"🚨 Daily Report 오류  |  {ACCOUNT_NAME}"),
         _fields_section(fields),
         _section(f"*에러 메시지*\n```{error_msg}```"),
         _section(f"*Traceback (last 10 lines)*\n```{tb_tail}```"),
     ]
 
-    fallback = f"[monitor_v2] {context} 오류: {error_type}: {error_msg[:200]}"
+    fallback = f"[{ACCOUNT_NAME}] Daily Report {context} 오류: {error_type}: {error_msg[:200]}"
     try:
         post_blocks(blocks, fallback_text=fallback)
     except Exception:

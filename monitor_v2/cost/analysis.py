@@ -37,7 +37,7 @@ from .data_cur import (
     _run_query, _partition,
     _ATHENA_DATABASE, _ATHENA_REGION,
     fetch_mtd_total_cur,
-    CREATOR_CASE_SQL,
+    _build_creator_case_sql,
 )
 from .data import fetch_cost_forecast
 
@@ -57,7 +57,7 @@ _TOP_BREAKDOWN_N     = 5     # 한 서비스 내 IAM × usage_type drill-down �
 # ---------------------------------------------------------------------------
 
 def _parse_iam_user(raw: str) -> str:
-    # SQL CREATOR_CASE_SQL 가 이미 파싱해 넘기므로 대부분 그대로 반환.
+    # SQL creator CASE 가 이미 파싱해 넘기므로 대부분 그대로 반환.
     # 레거시 raw 포맷("IAMUser:AIDA...:user", "AssumedRole:...:role")만 추가 파싱.
     if not raw:
         return ''
@@ -183,13 +183,14 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
     year_d1, month_d1 = _partition(d1_date)
     year_d2, month_d2 = _partition(d2_date)
     months = f"'{month_d1}'" if month_d1 == month_d2 else f"'{month_d1}', '{month_d2}'"
+    creator_case_sql = _build_creator_case_sql(athena)
 
     sql = f"""
         SELECT
             product_product_name AS service,
             line_item_usage_type AS usage_type,
             line_item_resource_id AS resource_id,
-            {CREATOR_CASE_SQL} AS iam_user,
+            {creator_case_sql} AS iam_user,
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
                      THEN line_item_unblended_cost ELSE 0 END) AS cost_d1,
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d2_date}')
@@ -265,13 +266,14 @@ def fetch_top_services_with_breakdown(
         ]
     """
     year_d1, month_d1 = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
 
     sql = f"""
         WITH base AS (
             SELECT
                 product_product_name                        AS service,
                 line_item_usage_type                        AS usage_type,
-                {CREATOR_CASE_SQL}                          AS iam_user,
+                {creator_case_sql}                          AS iam_user,
                 line_item_resource_id                       AS resource_id,
                 line_item_unblended_cost                    AS cost,
                 line_item_usage_amount                      AS usage_amount
@@ -389,12 +391,14 @@ def fetch_month_new_costs(athena, d1_date: date) -> list:
     if mtd_start > d2_date:
         return []
 
+    creator_case_sql = _build_creator_case_sql(athena)
+
     sql = f"""
         WITH month_to_yesterday AS (
             SELECT
                 product_product_name                        AS service,
                 line_item_usage_type                        AS usage_type,
-                {CREATOR_CASE_SQL}                          AS iam_user,
+                {creator_case_sql}                          AS iam_user,
                 line_item_resource_id                       AS resource_id,
                 DATE(line_item_usage_start_date)            AS dt,
                 line_item_unblended_cost                    AS cost
@@ -481,7 +485,7 @@ def fetch_mtd_top_users_with_breakdown(
     Q14 (어제 절대값 + IAM 분해) 의 누계 버전, 단 축이 user-first.
     "이번 달 누구한테 비용이 가장 많이 쌓였는가" 를 LLM 이 인식하도록 함.
 
-    creator 분류는 CREATOR_CASE_SQL fallback 체인 사용 (Q3/Q5/Q11/Q14/Q15 와 동일).
+    creator 분류는 _build_creator_case_sql fallback 체인 사용 (Q3/Q5/Q11/Q14/Q15 와 동일).
 
     Returns:
         [
@@ -508,13 +512,14 @@ def fetch_mtd_top_users_with_breakdown(
         return []
 
     year_d1, month_d1 = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
 
     sql = f"""
         WITH base AS (
             SELECT
                 product_product_name                        AS service,
                 line_item_usage_type                        AS usage_type,
-                {CREATOR_CASE_SQL}                          AS iam_user,
+                {creator_case_sql}                          AS iam_user,
                 line_item_resource_id                       AS resource_id,
                 line_item_unblended_cost                    AS cost
             FROM {_ATHENA_DATABASE}.cur_logs

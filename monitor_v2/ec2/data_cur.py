@@ -31,7 +31,7 @@ from .data import (
 )
 from ..cost.data_cur import (
     _run_query, _partition, _ATHENA_DATABASE, _ATHENA_REGION,
-    CREATOR_CASE_SQL,
+    _build_creator_case_sql,
 )
 
 log = logging.getLogger(__name__)
@@ -292,12 +292,13 @@ def collect_resource_creators_cur(athena, d1_date: date) -> dict:
     where_partitions = " OR ".join(
         f"(year = '{yy}' AND month = '{mm}')" for yy, mm in months
     )
+    creator_case_sql = _build_creator_case_sql(athena)
 
     sql = f"""
         WITH base AS (
             SELECT
                 line_item_resource_id      AS resource_id,
-                {CREATOR_CASE_SQL}         AS creator,
+                {creator_case_sql}         AS creator,
                 CASE WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
                      THEN 0 ELSE 1 END     AS priority,
                 line_item_usage_start_date AS ts
