@@ -781,12 +781,18 @@ _SYSTEM_PROMPT = """\
 
 (빈 줄)
 ■ 이번 달 누계 분석
-이번 달 누계가 어떻게 분포돼 있는지 + 신규 항목 — 누계 기준 서비스 비중,
-일평균, 신규로 등장한 (서비스 / IAM × 타입) 조합.
-2~4문장.
+이번 달 누계가 어떻게 분포돼 있는지 — 누계 기준 서비스 비중, 일평균.
+1~3문장.
 
 각 섹션은 반드시 `■ 어제 비용 분석` / `■ 이번 달 누계 분석` 헤더로 시작.
 헤더 앞뒤로 빈 줄 한 줄씩.
+
+⚠ Top 사용자 / 신규 발생 항목은 Python에서 별도로 렌더링되어 슬랙에 따로 노출되므로,
+당신은 **절대로 출력하지 말 것**:
+  ❌ "▸ 이번 달 Top<N> 사용자" 헤더와 그 아래 `• <user> ...` 불릿
+  ❌ "이번 달 들어 ~ 처음 등장 / 처음 비용 발생" 같은 신규 항목 언급
+  ❌ "신규" / "처음" / "새로 등장" 같은 단어 자체
+누계 섹션은 **서비스별 누계 비중·일평균 산문 1~3문장으로만 마무리**.
 
 === 첫 줄 작성 ===
 
@@ -851,13 +857,12 @@ EC2 인스턴스 사용 시간 (반드시 준수):
 서술 형식 강제 (표 형식 절대 금지):
 - 모든 수치는 "**문장 안에**" 자연스럽게 녹여 서술
 - 헤더 라인이나 들여쓰기 나열, 불릿 포인트 형식 모두 금지 (산문으로만 서술)
-  ※ 단 누계 분석 섹션의 "▸ 이번 달 Top 사용자" 부분은 불릿 리스트 사용 강제 (별도 가이드 따를 것)
 
 === ■ 이번 달 누계 분석 섹션 작성 ===
 
 반드시 `■ 이번 달 누계 분석` 헤더 한 줄로 시작.
 
-목적: 이번 달 누계의 분포 + 신규로 등장한 항목 + **누구한테 누적되어 있는지**.
+목적: 이번 달 누계의 분포 — 어떤 서비스가 얼마나 쌓였는지.
 
 다룰 범위:
 - 입력의 `=== 이번 달 누계 분석 raw ===` 섹션을 활용해 주요 서비스의 누계 금액, 비중, 일평균을 서술
@@ -872,54 +877,8 @@ EC2 인스턴스 사용 시간 (반드시 준수):
       ❌ "S3는 이번 달 누계의 8%($310, 일평균 $39 수준)"  ← % 와 $ 의 관계 모호
       ✅ "S3 $310 (이번 달 누계의 7.8%, 일평균 $39 수준)"
 - 누계 비중이 매우 작은 서비스(예: 0.1% 미만)는 생략 가능
-- 입력의 `=== 이번 달 누계 Top 사용자 raw ===` 섹션에 나온 **모든 사용자**를 **불릿 리스트**로 출력 (가독성을 위해 산문 대신 리스트 사용)
-  * ⚠ 절대 규칙 — 입력 사용자 수 = 출력 불릿 수. 한 명이라도 누락하면 즉시 규칙 위반.
-    먼저 입력의 `이번 달 누계 Top 사용자 raw` 섹션에서 `▸` 가 붙은 사용자 헤더 라인을 세어
-    N 을 확정하고, 출력에서도 정확히 N 개의 `• ` 불릿을 작성한다.
-  * 입력 라인은 비중 내림차순이므로 그 순서를 그대로 따를 것
-  * 비중이 작은 사용자(예: 6%, 4%, 1%)라도 입력에 존재하면 반드시 한 줄씩 출력 — 잘라내기 절대 금지
-  * 없는 사람을 만들어 채우지 말 것 (입력에 없는 사용자 추가 금지)
-  * ❌ 금지 패턴: 입력에 5명이 있는데 Top3만 출력, 입력에 4명인데 Top2만 출력 — 모두 규칙 위반
-  * 예외는 단 하나 — 입력에 사용자가 **정확히 1명**뿐일 때만 Top1 단독 출력 가능.
-    Top1 비중이 아무리 압도적이어도(예: 80%, 90%) 입력에 2명 이상 있으면 **전부** 출력.
-
-  형식 강제 — 다음 구조 정확히 따를 것:
-      ▸ 이번 달 Top{N} 사용자                     (N = 실제 출력하는 사용자 수, 예: Top5, Top4, Top3, Top2, Top1)
-      • <사용자> — $금액 (이번 달 누계의 X%): <서비스 1> $금액 (본인 비용의 X%), <서비스 2> $금액 (본인 비용의 X%)
-      • <사용자> — $금액 (이번 달 누계의 X%): <서비스 1> $금액 (본인 비용의 X%), <서비스 2> $금액 (본인 비용의 X%)
-
-  ⚠ 두 종류의 % 는 기준이 다르므로 라벨을 절대 생략하지 말 것:
-  - "이번 달 누계의 X%"  = 전체 MTD 대비 그 사용자의 비중       (입력의 `▸ 이번 달 누계의 N%` 값을 그대로 사용)
-  - "본인 비용의 X%"     = 그 사용자 누계 대비 해당 서비스 비중   (입력 라인 끝 `(본인 비용의 N%)` 값을 그대로 사용)
-
-  세부 규칙:
-  * 첫 줄 헤딩: `▸ 이번 달 Top5 사용자` / `▸ 이번 달 Top4 사용자` / `▸ 이번 달 Top3 사용자` / `▸ 이번 달 Top2 사용자` / `▸ 이번 달 Top1 사용자` 중 실제 불릿 개수와 일치하는 것으로 (한 줄 띄우고 시작)
-  * 각 사용자는 **`• ` 로 시작하는 한 줄**, 한 사용자당 한 줄만 사용 (줄바꿈 금지)
-  * 사용자 이름 뒤 ` — ` (em dash + 공백) 로 분리 후 `$금액 (이번 달 누계의 X%)` 표기
-  * 그 뒤 ` : ` 로 분리 후 그 사용자가 쓴 주된 서비스/타입 2~3개를 `, ` (comma + space) 로 연결
-  * 각 서비스/타입 항목은 `<서비스 항목> $금액 (본인 비용의 X%)` 형식 — 라벨 "본인 비용의" 절대 생략 금지
-  * 서비스명은 짧게: "EC2", "S3", "Bedrock", "EKS" 식 약어 사용. 인스턴스 타입은 그대로 ("p4d.24xlarge")
-  * 리전은 입력의 영문 코드 그대로 노출 ("us-west-2", "ap-northeast-2" 등). 한글 치환 금지.
-  * 데이터 전송 등 IAM agnostic 항목은 짧게 표기 ("us-west-2 데이터 전송")
-
-  ✅ 좋은 예 (형식 정확):
-      ▸ 이번 달 Top5 사용자
-      • hykim — $1,239 (이번 달 누계의 30%): EC2 p4d.24xlarge $481 (본인 비용의 39%), EC2 us-west-2 데이터 전송 $399 (본인 비용의 32%)
-      • swjeong — $916 (이번 달 누계의 22%): EC2 p4d.24xlarge $333 (본인 비용의 36%), EC2 g6e.48xlarge $195 (본인 비용의 21%)
-      • mhsong — $914 (이번 달 누계의 22%): EC2 m5.8xlarge $704 (본인 비용의 77%), S3 us-west-2 데이터 전송 $155 (본인 비용의 17%)
-      • yjjung — $420 (이번 달 누계의 10%): EC2 g5.xlarge $380 (본인 비용의 90%), EBS gp3 볼륨 $40 (본인 비용의 10%)
-      • criu — $210 (이번 달 누계의 5%): EC2 m5.8xlarge $180 (본인 비용의 86%), EBS 스냅샷 $30 (본인 비용의 14%)
-
-  ❌ 금지 예:
-     - "또한", "한편" 같은 도입어로 산문 형식으로 풀어 쓰기 (반드시 불릿 리스트로)
-     - "$481" 만 적고 비중% 누락 — 항상 `$금액 (본인 비용의 X%)` 둘 다 표기
-     - `($1,239, 30%)` / `($481, 39%)` 처럼 라벨 없이 % 만 노출 — 기준이 헷갈리므로 반드시 "이번 달 누계의" / "본인 비용의" 라벨 명시
-     - "누적 비용을 누적했으며" 같은 단어 중복
-
-  특수 라벨 처리:
-  * "[Project] criu" 처럼 prefix 가 붙어 있으면 자연어로 풀어서 — "criu 프로젝트"
-  * "[EKS] cluster-name" → "EKS 클러스터 cluster-name"
-  * "[공통] Data Transfer" 같은 공통 항목은 사용자명 자리에 "공통 항목(데이터 전송 등)" 으로 풀어 서술
+- 누계 섹션 본문은 위 산문 1~3문장으로만 마무리한다.
+  Top 사용자 불릿이나 신규 발생 항목은 **Python이 별도로 추가**하므로 절대 LLM에서 생성하지 말 것.
 
 용어 강제:
 - "누계" 단어 단독으로 쓰지 말 것 — 반드시 "**이번 달 누계**" 라고 풀어 쓸 것.
@@ -928,36 +887,17 @@ EC2 인스턴스 사용 시간 (반드시 준수):
 - 일평균 표기 시 "수준" 단어 그대로 사용 — 입력 라인의 `일평균 $X 수준` 형식을 그대로 옮길 것.
   ❌ 한글 오타 ("수줤", "수즌" 등) 절대 금지
   ✅ "일평균 $429 수준"
-- 입력의 `=== 이번 달 신규 발생 ===` 항목 처리 (라벨 A / B에 따라):
-
-  라벨 A — [새 서비스]
-  → 그 서비스 자체가 이번 달 처음 등장.
-  → 표현 예: "이번 달 들어 EKS에서 처음 비용($12)이 발생했으며, mhsong이 us-west-2에서 클러스터를 가동한 것으로 보입니다."
-
-  라벨 B — [기존 서비스 안의 새 조합]
-  → 그 서비스(EC2, S3 등)는 이미 사용 중. 그 안의 (IAM × usage_type) 조합만 처음.
-  → 절대 금지: ❌ "이번 달 들어 새로 비용이 발생한 서비스로 EC2가 있으며"
-               ❌ "EC2가 이번 달 처음 등장한 서비스"
-               ❌ "서비스"라는 단어로 신규 표현
-  → 표현 강제: (IAM × 타입) 조합 + 금액 + 비중%로 구체화
-  → 예: "이번 달 들어 swjeong의 us-west-2 inf2.24xlarge 사용이 처음 등장했고, 어제 단일로 EC2 어제 비용의 48%($53)를 만들었습니다."
-
-  라벨 혼용 금지: 라벨 자체("[새 서비스]", "[기존 ...]")는 출력에 노출 금지 — 의미만 풀어 쓸 것.
-
-- 신규 발생이 (없음)이고 따로 다룰 누계 통찰도 약하면 → 누계 비중 한 문장만 적고 마무리.
-  단 "신규 발생 없음" 같은 부정 진술 절대 금지 — 화제 자체 꺼내지 말 것.
 
 - 사용자가 여러 서비스에 걸쳐 있다는 표현으로 "걸쳐 합산 $X" 식의 문장을 절대 추가하지 말 것.
-  Top 사용자 불릿이 이미 사용자별 서비스 분해를 다 깔고 있으므로, 그 위에 합산만 적는 문장은 정보 손실이며 중복.
   ❌ "또한 mhsong이 EC2와 S3에 걸쳐 합산 $95를 사용한 점이 눈에 띕니다." (서비스 간 합산 금지)
-  필요 시 Top 사용자 불릿 안에서 해당 사용자 항목을 한 줄 더 길게 풀어 쓰는 것으로 대체.
 
 === 두 섹션 공통 절대 금지 ===
 
-- 어제 비용 분석 섹션에서 "이번 달 신규" 같은 누계/신규 표현 금지 — 그건 누계 섹션 전용
+- 어제 비용 분석 섹션에서 "이번 달 누계 X%" 같은 누계 표현 금지 — 그건 누계 섹션 전용
 - 누계 분석 섹션에서 "어제 비용의 X%" 만 단독으로 적기 금지 — 그건 어제 섹션 전용
-  (단, 라벨 B 항목 서술 시 "어제 단일로 EC2의 X%" 처럼 누계 맥락에서 어제 비중을 인용하는 건 허용)
 - 두 섹션을 한 문단으로 합쳐 헤더 없이 서술 금지 — 반드시 `■` 헤더로 분리
+- "신규", "처음 등장", "처음 발생", "새로 등장" 같은 단어 자체 출력 금지 (Python이 신규 발생 섹션을 별도로 출력함)
+- "▸ 이번 달 Top<N> 사용자" / `• ` 불릿 출력 금지 (Python이 Top 사용자 섹션을 별도로 출력함)
 
 === 단정 금지 — 반드시 준수 ===
 
@@ -986,7 +926,7 @@ EC2 인스턴스 사용 시간 (반드시 준수):
   "하루 종일 운영" 같은 표현을 **임의로 붙이지 말 것**.
   ❌ 금지 예: "태그 없는 EKS 클러스터가 풀 가동되었을 가능성이 높습니다"
   ✅ 허용 예 (입력에 시간 정보가 명시된 EC2 항목만): "jhpark의 inf2.24xlarge 3대가 1대 평균 3시간 가동"
-- 항목별 라인 출력, 들여쓰기 나열, 헤더-디테일 형식 (단 누계 섹션의 "▸ 이번 달 Top 사용자" 불릿은 예외)
+- 항목별 라인 출력, 들여쓰기 나열, 헤더-디테일 형식 일체 금지 (산문으로만)
 - "한 프로젝트", "ML 워크로드", "학습 작업", "추론 작업" 등 입력에 없는 추측 단어
 - 외래어 "driver" / "cost driver" / "핵심 driver" 단어 사용 (대신 "주된 항목", "가장 큰 비중" 같은 한국어 표현, 단 "비용의 대부분" 같은 모호 양화 표현은 % 로 대체)
 - 입력에 사용된 시스템 라벨/구분자를 출력에 노출 금지:
@@ -1023,7 +963,7 @@ EC2 인스턴스 사용 시간 (반드시 준수):
 
 === 출력 예시 (이 텍스트 자체는 출력 금지) ===
 
-[입력 1 — 라벨 B (기존 서비스 안의 새 조합)]
+[입력]
 어제(2026-05-08) AWS 비용  $126.14
 이번 달 8일 동안 $3,983.00 사용. 이대로 진행 시 월말 예상 약 $13,268.00.
 
@@ -1048,28 +988,7 @@ S3  $310.00  ▸ 이번 달 누계의 7.8%  일평균 $39.00 수준
 EKS  $145.00  ▸ 이번 달 누계의 3.6%  일평균 $18.00 수준
 Bedrock  $96.00  ▸ 이번 달 누계의 2.4%  일평균 $12.00 수준
 
-=== 이번 달 누계 Top 사용자 raw ===
-hykim  $1,239.00  ▸ 이번 달 누계의 31.1%
-    EC2 us-west-2 p4d.24xlarge 온디맨드 인스턴스  $481.00 (본인 비용의 38.8%)
-    EC2 us-west-2 데이터 전송  $399.00 (본인 비용의 32.2%)
-    S3 us-west-2 스토리지  $120.00 (본인 비용의 9.7%)
-swjeong  $916.00  ▸ 이번 달 누계의 23.0%
-    EC2 us-west-2 p4d.24xlarge 온디맨드 인스턴스  $333.00 (본인 비용의 36.4%)
-    EC2 us-west-2 g6e.48xlarge 온디맨드 인스턴스  $195.00 (본인 비용의 21.3%)
-mhsong  $914.00  ▸ 이번 달 누계의 22.9%
-    EC2 us-west-2 m5.8xlarge 온디맨드 인스턴스  $704.00 (본인 비용의 77.0%)
-    S3 us-west-2 데이터 전송  $155.00 (본인 비용의 17.0%)
-yjjung  $250.00  ▸ 이번 달 누계의 6.3%
-    EC2 us-west-2 g5.xlarge 온디맨드 인스턴스  $230.00 (본인 비용의 92.0%)
-    EBS gp3 볼륨  $20.00 (본인 비용의 8.0%)
-criu  $180.00  ▸ 이번 달 누계의 4.5%
-    EC2 us-west-2 m5.8xlarge 온디맨드 인스턴스  $150.00 (본인 비용의 83.3%)
-    EBS 스냅샷  $30.00 (본인 비용의 16.7%)
-
-=== 이번 달 신규 발생 ===
-[기존 서비스 안의 새 조합] EC2  $53.00  swjeong: us-west-2 inf2.24xlarge 온디맨드 인스턴스 ×1개 1대 평균 8시간
-
-[모범 출력]
+[모범 출력 — Top 사용자 / 신규 발생은 Python 측에서 별도 출력되므로 절대 포함하지 말 것]
 어제(2026-05-08) AWS 비용은 $126.14였습니다. 이번 달 8일 동안 $3,983을 사용했으며, 이 추세가 이어지면 월말 약 $13,268이 예상됩니다.
 
 ■ 어제 비용 분석
@@ -1078,97 +997,7 @@ criu  $180.00  ▸ 이번 달 누계의 4.5%
 ■ 이번 달 누계 분석
 EC2 $3,432 (이번 달 누계의 86.0%, 일평균 $429 수준)가 가장 큰 비중을 차지합니다. 이외에 S3 $310 (이번 달 누계의 7.8%, 일평균 $39 수준), EKS $145 (이번 달 누계의 3.6%, 일평균 $18 수준), Bedrock $96 (이번 달 누계의 2.4%, 일평균 $12 수준)입니다.
 
-▸ 이번 달 Top5 사용자
-• hykim — $1,239 (이번 달 누계의 31.1%): EC2 p4d.24xlarge $481 (본인 비용의 38.8%), EC2 us-west-2 데이터 전송 $399 (본인 비용의 32.2%), S3 us-west-2 스토리지 $120 (본인 비용의 9.7%)
-• swjeong — $916 (이번 달 누계의 23.0%): EC2 p4d.24xlarge $333 (본인 비용의 36.4%), EC2 g6e.48xlarge $195 (본인 비용의 21.3%)
-• mhsong — $914 (이번 달 누계의 22.9%): EC2 m5.8xlarge $704 (본인 비용의 77.0%), S3 us-west-2 데이터 전송 $155 (본인 비용의 17.0%)
-• yjjung — $250 (이번 달 누계의 6.3%): EC2 g5.xlarge $230 (본인 비용의 92.0%), EBS gp3 볼륨 $20 (본인 비용의 8.0%)
-• criu — $180 (이번 달 누계의 4.5%): EC2 m5.8xlarge $150 (본인 비용의 83.3%), EBS 스냅샷 $30 (본인 비용의 16.7%)
-
-이번 달 들어 swjeong의 us-west-2 inf2.24xlarge 사용이 처음 등장했고, 어제 단일로 EC2 어제 비용의 48%($53)를 만들었습니다.
-
----
-
-[입력 2 — 라벨 A (새 서비스)]
-어제(2026-05-06) AWS 비용  $233.36
-이번 달 6일 동안 $3,654.47 사용. 이대로 진행 시 월말 예상 약 $18,199.64.
-
-=== 어제 비용 분석 raw ===
-EC2  $181.37  ▸ 어제의 78%
-    태그 없는 m5.8xlarge 온디맨드 인스턴스 ×10개 풀 가동  $97.89 (54%)
-    mhsong: us-west-2 m5.8xlarge 온디맨드 인스턴스 ×10개 풀 가동  $43.19 (24%)
-    kernel-fusion-benchmark: us-west-2 inf2.xlarge 온디맨드 인스턴스 ×11개 1대 평균 18시간  $18.81 (10%)
-S3  $46.87  ▸ 어제의 20%
-    mhsong: us-west-2 데이터 전송  $41.49 (89%)
-
-=== 어제 관찰된 신호 ===
-- [EC2 페이스] 이번 달 누계 $1,940.00 / 일평균 $323.33 / 어제 $181.37 (일평균의 56%) — 평소보다 낮은 흐름
-
-=== 이번 달 누계 분석 raw ===
-EC2  $1,940.00  ▸ 이번 달 누계의 53.1%  일평균 $323.33 수준
-S3  $312.00  ▸ 이번 달 누계의 8.5%  일평균 $52.00 수준
-
-=== 이번 달 누계 Top 사용자 raw ===
-mhsong  $1,800.00  ▸ 이번 달 누계의 49.3%
-    EC2 us-west-2 m5.8xlarge 온디맨드 인스턴스  $1,200.00 (본인 비용의 66.7%)
-    S3 us-west-2 데이터 전송  $310.00 (본인 비용의 17.2%)
-kernel-fusion-benchmark  $420.00  ▸ 이번 달 누계의 11.5%
-    EC2 us-west-2 inf2.xlarge 온디맨드 인스턴스  $420.00 (본인 비용의 100.0%)
-
-=== 이번 달 신규 발생 ===
-[새 서비스] EKS  $12.40  mhsong: us-west-2 EKS 클러스터 운영 시간
-
-[모범 출력]
-어제(2026-05-06) AWS 비용은 $233.36였습니다. 이번 달 6일 동안 $3,654를 사용했으며, 이 추세가 이어지면 월말 약 $18,200이 예상됩니다.
-
-■ 어제 비용 분석
-어제 비용은 EC2가 78%($181)로 가장 큰 비중을 차지했습니다. 그 안에서는 us-west-2의 m5.8xlarge 20대(태그 없음 10대 + mhsong 10대)가 풀 가동되어 합산 $141(78%)로 가장 큰 비중을 만들었고, kernel-fusion-benchmark의 inf2.xlarge 11대($19, 10%)는 1대 평균 18시간 가동되어 다음 비중을 차지합니다. EC2는 이번 달 일평균 $323 수준으로 발생 중이며 어제 $181은 평소보다 낮은 흐름입니다. S3는 어제 $47이 발생했으며 주된 항목은 mhsong의 us-west-2 데이터 전송($41, 89%)입니다.
-
-■ 이번 달 누계 분석
-EC2 $1,940 (이번 달 누계의 53.1%, 일평균 $323 수준)가 가장 큰 비중을 차지합니다. 이외에 S3 $312 (이번 달 누계의 8.5%, 일평균 $52 수준)이 다음입니다.
-
-▸ 이번 달 Top2 사용자
-• mhsong — $1,800 (이번 달 누계의 49.3%): EC2 m5.8xlarge $1,200 (본인 비용의 66.7%), S3 us-west-2 데이터 전송 $310 (본인 비용의 17.2%)
-• kernel-fusion-benchmark — $420 (이번 달 누계의 11.5%): EC2 inf2.xlarge $420 (본인 비용의 100.0%)
-
-이번 달 들어 EKS에서 처음 비용($12)이 발생했으며, mhsong이 us-west-2에서 클러스터를 가동한 것으로 보입니다.
-
----
-
-[입력 3 — 신규 발생 (없음)]
-어제(2026-05-10) AWS 비용  $198.00
-이번 달 10일 동안 $1,920.00 사용. 이대로 진행 시 월말 예상 약 $5,950.00.
-
-=== 어제 비용 분석 raw ===
-EC2  $180.00  ▸ 어제의 91%
-    mhsong: us-west-2 m5.8xlarge 온디맨드 인스턴스 ×10개 풀 가동  $170.00 (94%)
-
-=== 이번 달 누계 분석 raw ===
-EC2  $1,800.00  ▸ 이번 달 누계의 93.8%  일평균 $180.00 수준
-S3  $120.00  ▸ 이번 달 누계의 6.3%  일평균 $12.00 수준
-
-=== 이번 달 누계 Top 사용자 raw ===
-mhsong  $1,820.00  ▸ 이번 달 누계의 94.8%
-    EC2 us-west-2 m5.8xlarge 온디맨드 인스턴스  $1,700.00 (본인 비용의 93.4%)
-    S3 us-west-2 스토리지  $120.00 (본인 비용의 6.6%)
-
-=== 이번 달 신규 발생 ===
-(없음)
-
-[모범 출력 — 누계 섹션은 신규 없이 누계 비중 + Top 사용자만. 이 예시는 입력에 사용자가 mhsong 1명뿐이라 Top1로 출력됨 — 입력에 N명이면 반드시 N명 모두 출력]
-어제(2026-05-10) AWS 비용은 $198였습니다. 이번 달 10일 동안 $1,920을 사용했으며, 이 추세가 이어지면 월말 약 $5,950이 예상됩니다.
-
-■ 어제 비용 분석
-어제 비용은 EC2가 91%($180)로 가장 큰 비중을 차지했습니다. mhsong의 m5.8xlarge 10대($170, 94%)가 풀 가동되어 발생했습니다. EC2는 이번 달 일평균 $180 수준으로 발생 중이며 어제 $180도 평소 수준입니다.
-
-■ 이번 달 누계 분석
-EC2 $1,800 (이번 달 누계의 93.8%, 일평균 $180 수준)가 가장 큰 비중을 차지합니다. 이외에 S3 $120 (이번 달 누계의 6.3%, 일평균 $12 수준)이 다음입니다.
-
-▸ 이번 달 Top1 사용자
-• mhsong — $1,820 (이번 달 누계의 94.8%): EC2 m5.8xlarge $1,700 (본인 비용의 93.4%), S3 us-west-2 스토리지 $120 (본인 비용의 6.6%)
-
-(주의: 신규 발생이 (없음)이므로 누계 섹션에서 "신규로 등장한 ~" 화제를 꺼내지 말 것. 누계 비중 + Top 사용자 불릿으로 마무리.)
-(주의: 입력에 mhsong 1명만 있으므로 1명만 출력. 입력에 없는 사용자를 만들어 채우지 말 것. 입력에 N명이 있다면 N명 모두를 출력해야 함 — 임의로 끊는 것은 금지.)
+(여기서 출력 끝 — 그 뒤 "▸ 이번 달 Top..." / "이번 달 들어 ... 처음 등장" 등은 일체 작성 금지. Python이 추가함.)
 """
 
 
@@ -1309,71 +1138,93 @@ def _fmt_mtd_breakdown(service_mtd: dict, mtd_total: float, mtd_days_elapsed: in
     return '\n'.join(lines) if lines else '(없음)'
 
 
-def _fmt_top_users_mtd(rows: list, mtd_total: float) -> str:
+# ---------------------------------------------------------------------------
+# Slack 출력용 결정론 렌더러 (LLM 미경유)
+# ---------------------------------------------------------------------------
+#
+# Top 사용자 / 신규 발생은 구조 데이터를 그대로 매핑하면 되는 항목이므로
+# LLM에 맡기지 않는다. Nova Micro 같은 작은 모델은 "입력 N개를 그대로 N개로
+# 출력하라" 류 카운팅 제약을 흔히 어겨 Top3/Top4 잘림, 통째로 누락 같은
+# 사고를 낸다. Python에서 직접 렌더링하면 100% 일관된 출력이 보장된다.
+
+def format_top_users_section_for_slack(top_users_mtd: list, mtd_total: float) -> str:
     """
-    Q17 결과 → LLM 입력 텍스트 (이번 달 누계 Top 사용자 섹션).
+    Q17 결과 → Slack 출력 문자열 (결정론).
 
-    각 사용자 헤더에 MTD 누계 + 전체 누계 대비 비중(%).
-    각 서비스/타입 라인에 사용자 누계 대비 비중(%).
+    출력 형식:
+        ▸ 이번 달 Top{N} 사용자
+        • <user> — $<금액> (이번 달 누계의 X.X%): <서비스> <usage> $<금액> (본인 비용의 X.X%), ...
 
-    두 비중은 기준이 다르므로 출력에서도 라벨로 구분된다:
-        - 사용자 헤더: "이번 달 누계의 X%"  (전체 MTD 대비)
-        - 서비스 라인: "본인 비용의 X%"     (그 사용자 누계 대비)
+    Args:
+        top_users_mtd: fetch_mtd_top_users_with_breakdown 반환값
+        mtd_total:     이번 달 누계 총비용
 
-    예:
-        swjeong  $245.30  ▸ 이번 달 누계의 32.1%
-            EC2 inf2.24xlarge 시간 ×2개  $120.00 (본인 비용의 48.9%)
-            S3 USW2-TimedStorage         $80.00 (본인 비용의 32.6%)
+    Returns:
+        섹션 문자열 (헤더 1줄 + 사용자 N줄). 데이터 없으면 빈 문자열.
     """
-    if not rows:
-        return '(없음)'
-    blocks = []
-    for u in rows:
+    if not top_users_mtd or mtd_total <= 0:
+        return ''
+
+    n = len(top_users_mtd)
+    lines = [f"▸ 이번 달 Top{n} 사용자"]
+    for u in top_users_mtd:
         user      = u['iam_user']
         user_cost = u['mtd_total']
         share     = (user_cost / mtd_total * 100) if mtd_total > 0 else 0
-        header    = f"{user}  ${user_cost:,.2f}  ▸ 이번 달 누계의 {share:.1f}%"
-        lines = []
+
+        breakdown_parts = []
         for d in u.get('breakdowns', []):
             if d.get('cost', 0) < 1.0:
                 continue
             short_svc   = _SVC_SHORT.get(d['service'], d['service'])
             usage_human = d.get('usage_human') or d.get('usage_type', '')
             sub_share   = (d['cost'] / user_cost * 100) if user_cost > 0 else 0
-            count_str   = f" ×{d['count']}개" if d.get('count', 0) > 1 and _is_countable(d.get('usage_type', '')) else ''
-            lines.append(
-                f"    {short_svc} {usage_human}{count_str}  ${d['cost']:,.2f} (본인 비용의 {sub_share:.1f}%)"
+            count_str   = (
+                f" ×{d['count']}개"
+                if d.get('count', 0) > 1 and _is_countable(d.get('usage_type', ''))
+                else ''
             )
-        if lines:
-            blocks.append(header + '\n' + '\n'.join(lines))
-        else:
-            blocks.append(header)
-    return '\n'.join(blocks)
+            breakdown_parts.append(
+                f"{short_svc} {usage_human}{count_str} ${d['cost']:,.2f} (본인 비용의 {sub_share:.1f}%)"
+            )
+
+        line = f"• {user} — ${user_cost:,.2f} (이번 달 누계의 {share:.1f}%)"
+        if breakdown_parts:
+            line += ": " + ", ".join(breakdown_parts)
+        lines.append(line)
+    return '\n'.join(lines)
 
 
-def _fmt_new_costs(rows: list, top_services: list = None) -> str:
+def format_new_costs_section_for_slack(new_costs: list, top_services: list) -> str:
     """
-    Q15 결과 → LLM 입력 텍스트.
-    이번 달 들어 처음 발생한 (service, IAM, usage_type) 항목.
+    Q15 결과 → Slack 출력 문자열 (결정론).
 
-    각 라인 앞에 신규 종류 라벨 부착:
-        [새 서비스]              그 서비스가 어제 Top N에 없음 → 서비스 자체가 이번 달 새로 등장
-        [기존 서비스 안의 새 조합]  그 서비스는 어제 Top N에 있음 → 그 안의 IAM × usage_type 조합만 새로 등장
+    어제 ≥ _NEW_COST_THRESHOLD ($10 기본) 로 새로 등장한 (service, IAM, usage_type) 조합만 노출.
+    [신규 서비스] 라벨은 그 서비스가 어제 Top N에 없을 때, [신규 조합]은 있을 때.
 
-    LLM이 라벨을 보고 적절한 표현(서비스 신규 vs 조합 신규)을 고를 수 있도록
-    Python 단에서 미리 분류한다.
+    출력 형식:
+        ▸ 이번 달 신규 발생 (어제 ≥ $10)
+        • [신규 서비스] EKS $12.40 — mhsong: us-west-2 EKS 클러스터 운영 시간
+        • [신규 조합]   EC2 $53.00 — swjeong: us-west-2 inf2.24xlarge 온디맨드 인스턴스 ×1개 1대 평균 8시간
+
+    Args:
+        new_costs:     fetch_month_new_costs 반환값
+        top_services:  어제 Top N 서비스 (라벨 분류용)
+
+    Returns:
+        섹션 문자열. 데이터 없으면 빈 문자열.
     """
-    if not rows:
-        return '(없음)'
+    if not new_costs:
+        return ''
 
     top_service_names = {svc['service'] for svc in (top_services or [])}
 
-    lines = []
-    for r in rows:
-        short = _SVC_SHORT.get(r['service'], r['service'])
-        line  = _format_breakdown_line(r)
-        label = '[기존 서비스 안의 새 조합]' if r['service'] in top_service_names else '[새 서비스]'
-        lines.append(f"{label} {short}  ${r['cost_d1']:,.2f}  {line}")
+    lines = [f"▸ 이번 달 신규 발생 (어제 ≥ ${_NEW_COST_THRESHOLD:.0f})"]
+    for r in new_costs:
+        short     = _SVC_SHORT.get(r['service'], r['service'])
+        item_line = _format_breakdown_line(r)
+        label     = '[신규 조합]' if r['service'] in top_service_names else '[신규 서비스]'
+        lines.append(f"• {label} {short} ${r['cost_d1']:,.2f} — {item_line}")
     return '\n'.join(lines)
 
 
@@ -1506,23 +1357,20 @@ def _build_user_message(
     d1_date: date,
     d1_total: float,
     top_services: list,
-    new_costs: list,
     mtd_total: float,
     mtd_days_elapsed: int,
     forecast_total: float,
     service_mtd: dict = None,
-    top_users_mtd: list = None,
 ) -> str:
     """
     LLM 입력 메시지.
 
     LLM에 raw 데이터 + 미리 계산된 그룹/패턴/페이스 신호를 같이 전달한다.
-    LLM은 이 데이터를 바탕으로 "3문단 통찰형 요약"을 생성.
+    LLM은 이 데이터를 바탕으로 "어제 비용 분석" + "이번 달 누계 분석" 산문 요약만 생성.
+    Top 사용자 / 신규 발생은 Python에서 결정론적으로 렌더링하므로 LLM에 넣지 않는다.
     """
     top_text       = _fmt_top_services(top_services, d1_total)
-    new_text       = _fmt_new_costs(new_costs, top_services)
     mtd_break_text = _fmt_mtd_breakdown(service_mtd or {}, mtd_total, mtd_days_elapsed)
-    mtd_users_text = _fmt_top_users_mtd(top_users_mtd or [], mtd_total)
     signals        = _detect_signals(
         top_services, d1_total,
         service_mtd=service_mtd, mtd_days_elapsed=mtd_days_elapsed,
@@ -1540,6 +1388,8 @@ def _build_user_message(
     )
     monthly_block = mtd_line + forecast_line
 
+    # Top 사용자 / 신규 발생은 LLM에 넣지 않는다 — Python에서 직접 렌더링하므로
+    # 입력에서 빠져야 LLM이 임의로 비슷한 섹션을 만들거나 잘라내는 사고가 없다.
     return f"""어제({d1_date}) AWS 비용  ${d1_total:,.2f}
 {monthly_block}
 
@@ -1552,12 +1402,6 @@ def _build_user_message(
 === 이번 달 누계 분석 raw ===
 {mtd_break_text}
 
-=== 이번 달 누계 Top 사용자 raw ===
-{mtd_users_text}
-
-=== 이번 달 신규 발생 ===
-{new_text}
-
 위 입력만을 사용해 시스템 지시에 따라 2섹션 한국어 보고를 작성하세요."""
 
 
@@ -1569,12 +1413,10 @@ def summarize(
     d1_date: date,
     d1_total: float,
     top_services: list,
-    new_costs: list,
     mtd_total: float,
     mtd_days_elapsed: int,
     forecast_total: float,
     service_mtd: dict = None,
-    top_users_mtd: list = None,
 ) -> str:
     """
     Nova Micro에 비용 요약 요청.
@@ -1586,12 +1428,10 @@ def summarize(
         d1_date=d1_date,
         d1_total=d1_total,
         top_services=top_services,
-        new_costs=new_costs,
         mtd_total=mtd_total,
         mtd_days_elapsed=mtd_days_elapsed,
         forecast_total=forecast_total,
         service_mtd=service_mtd,
-        top_users_mtd=top_users_mtd,
     )
     bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
     body = json.dumps({
@@ -1629,6 +1469,13 @@ def summarize(
         r'^.*\[묶음\].*$',
         # 어색한 명사구
         r'^.*(?:신규|발생)\s*항목(?:이|은|으로)?\s*없(?:습니다|음).*$',
+        # LLM이 Python 전용 영역(Top 사용자 / 신규 발생)을 흉내 내는 경우 차단.
+        # Python 측에서 결정론적으로 따로 출력하므로 LLM 본문에 새어 나오면 중복.
+        r'^\s*▸\s*이번\s*달\s*Top\s*\d+\s*사용자.*$',
+        r'^\s*▸\s*이번\s*달\s*신규\s*발생.*$',
+        r'^\s*•\s+.*\(이번\s*달\s*누계의.*\).*$',           # • <user> — $X (이번 달 누계의 ...) 패턴
+        r'^\s*•\s+\[신규\s*(?:서비스|조합)\].*$',           # • [신규 서비스/조합] ... 패턴
+        r'^.*이번\s*달\s*들어.*(?:처음\s*(?:등장|발생|비용)|새로\s*(?:등장|비용\s*발생)).*$',
     ]
     for pat in bad_line_patterns:
         text = re.sub(pat, '', text, flags=re.MULTILINE)
@@ -1730,33 +1577,37 @@ def collect_all(d1_date: date) -> dict:
             d1_date=d1_date,
             d1_total=d1_total,
             top_services=top_services,
-            new_costs=new_costs,
             mtd_total=mtd_total,
             mtd_days_elapsed=mtd_days_elapsed,
             forecast_total=forecast_total,
             service_mtd=service_mtd,
-            top_users_mtd=top_users_mtd,
         )
     except Exception as e:
         log.error("Bedrock 호출 실패: %s", e)
         summary   = f"LLM 분석 실패 (Bedrock 오류). 어제 총비용 ${d1_total:,.2f}."
         llm_error = e
 
+    # Top 사용자 / 신규 발생은 결정론적으로 렌더링 — LLM이 카운트를 흔드는 사고 회피.
+    top_users_section = format_top_users_section_for_slack(top_users_mtd, mtd_total)
+    new_costs_section = format_new_costs_section_for_slack(new_costs, top_services)
+
     return {
-        'd1_date':          d1_date,
-        'd2_date':          d2_date,
-        'd1_total':         d1_total,
-        'd2_total':         d2_total,
-        'service_rows':     service_rows,
-        'usage_type_rows':  usage_type_rows,
-        'resource_rows':    resource_rows,
-        'top_services':     top_services,
-        'new_costs':        new_costs,
-        'service_mtd':      service_mtd,
-        'top_users_mtd':    top_users_mtd,
-        'mtd_total':        mtd_total,
-        'mtd_days_elapsed': mtd_days_elapsed,
-        'forecast_total':   forecast_total,
-        'summary':          summary,
-        'llm_error':        llm_error,
+        'd1_date':           d1_date,
+        'd2_date':           d2_date,
+        'd1_total':          d1_total,
+        'd2_total':          d2_total,
+        'service_rows':      service_rows,
+        'usage_type_rows':   usage_type_rows,
+        'resource_rows':     resource_rows,
+        'top_services':      top_services,
+        'new_costs':         new_costs,
+        'service_mtd':       service_mtd,
+        'top_users_mtd':     top_users_mtd,
+        'mtd_total':         mtd_total,
+        'mtd_days_elapsed':  mtd_days_elapsed,
+        'forecast_total':    forecast_total,
+        'summary':           summary,
+        'top_users_section': top_users_section,
+        'new_costs_section': new_costs_section,
+        'llm_error':         llm_error,
     }

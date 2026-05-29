@@ -93,15 +93,17 @@ def _split_summary(summary: str) -> tuple:
 
 
 def _build_main3(analysis: dict) -> list:
-    d1_date          = analysis['d1_date']
-    d1_total         = analysis['d1_total']
-    summary          = analysis['summary']
-    service_rows     = analysis['service_rows']
-    usage_rows       = analysis['usage_type_rows']
-    resource_rows    = analysis['resource_rows']
-    mtd_total        = analysis.get('mtd_total', 0.0)
-    mtd_days_elapsed = analysis.get('mtd_days_elapsed', 0)
-    forecast_total   = analysis.get('forecast_total', 0.0)
+    d1_date           = analysis['d1_date']
+    d1_total          = analysis['d1_total']
+    summary           = analysis['summary']
+    service_rows      = analysis['service_rows']
+    usage_rows        = analysis['usage_type_rows']
+    resource_rows     = analysis['resource_rows']
+    mtd_total         = analysis.get('mtd_total', 0.0)
+    mtd_days_elapsed  = analysis.get('mtd_days_elapsed', 0)
+    forecast_total    = analysis.get('forecast_total', 0.0)
+    top_users_section = analysis.get('top_users_section', '')
+    new_costs_section = analysis.get('new_costs_section', '')
 
     fields = [
         f"*어제({d1_date}) 총비용*\n`${d1_total:,.2f}`",
@@ -127,6 +129,13 @@ def _build_main3(analysis: dict) -> list:
     if not (opening or yesterday_body or mtd_body):
         # 분할 실패 fallback — 원문 그대로
         summary_blocks.append(_section(summary))
+
+    # Top 사용자 / 신규 발생은 Python에서 결정론적으로 렌더링한 결과.
+    # LLM이 카운트를 흔들거나 통째로 누락하는 사고를 회피하기 위해 별도 블록으로 발송.
+    if top_users_section:
+        summary_blocks.append(_section(top_users_section))
+    if new_costs_section:
+        summary_blocks.append(_section(new_costs_section))
 
     return [
         _header(f"AWS 비용 변화 분석  |  {d1_date}  |  {ACCOUNT_NAME}"),
