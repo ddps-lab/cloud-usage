@@ -1,7 +1,9 @@
+import os
 import boto3
 from datetime import datetime, timedelta, timezone
 
 from .cost.data_cur import collect_all as collect_cost_data
+from .cost.data     import collect_all as collect_cost_data_ce
 from .ec2.data_cur  import collect_all as collect_ec2_data
 from .cost.report_cur      import send_cur_report
 from .ec2.report_cur       import send_ec2_cur_report
@@ -9,6 +11,9 @@ from .cost.report_analysis import send_main3_report
 from .slack import client as slack
 
 KST = timezone(timedelta(hours=9))
+
+# spotlake 계정은 CUR 미적재 → Cost Explorer(data.py) 경로로 임시 우회
+ACCOUNT_NAME = os.environ.get('ACCOUNT_NAME', '')
 
 
 def lambda_handler(event, context):
@@ -50,7 +55,8 @@ def lambda_handler(event, context):
 
     # ── 날짜 산정 ─────────────────────────────────────────────────
     try:
-        today_kst = datetime.now(KST).date()
+        today_actual = datetime.now(KST).date()   # 디크리먼트 전 실제 오늘 (spotlake CE 경로용)
+        today_kst = today_actual
         if date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
     except Exception as e:
@@ -91,9 +97,16 @@ def lambda_handler(event, context):
 
     base_meta['account_id'] = account_id
 
-    # ── Cost 데이터 수집 (CUR / Athena 기반, forecast만 CE 사용) ──
+    # ── Cost 데이터 수집 ──────────────────────────────────────────
+    # spotlake 계정: CUR 미적재 → Cost Explorer(data.py)로 우회.
+    #   CE는 24~48h 지연 → collect_all 내부에서 항상 d1 = (인자) - 2.
+    #   today_actual을 넘겨 date_mode와 무관하게 항상 D-2 리포트.
+    # 그 외 계정: 기존 CUR/Athena 경로 그대로 (forecast만 CE 사용).
     try:
-        cost_data = collect_cost_data(today_kst)
+        if ACCOUNT_NAME == 'spotlake':
+            cost_data = collect_cost_data_ce(today_actual)
+        else:
+            cost_data = collect_cost_data(today_kst)
     except Exception as e:
         slack.post_error(context='cost_collect', error=e, meta=base_meta)
         return 500
