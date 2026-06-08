@@ -51,6 +51,14 @@ _NEW_COST_PRIOR_CUT  = 1.0   # 이번 달 1일~그제 누적 $1 미만이면 "�
 _TOP_SERVICES_N      = 5     # ■ 현황 노출 서비스 수
 _TOP_BREAKDOWN_N     = 5     # 한 서비스 내 IAM × usage_type drill-down 수
 
+# IAM User / 서비스 단위 비용에 Tax 포함 (Usage × 1.10).
+# Q14/Q15/Q16/Q17 은 `line_item_line_item_type != 'Tax'` 로 Tax 라인을 제외하므로
+# 그 자체로는 세전(usage only) 값이다. 반면 분모로 쓰는 mtd_total(fetch_mtd_total_cur)
+# 과 d1_total(Q9) 은 Tax 라인을 포함한 세후 값이라, 세전 분자를 그대로 쓰면
+# 비중%가 ~10% 과소 계상되고 Main 1 의 IAM 표(data_cur.py, 동일하게 ×1.10)와도 어긋난다.
+# → data_cur.py 의 fetch_mtd_by_service_and_creator_cur 와 동일한 ×1.10 규약을 맞춘다.
+_TAX_MULTIPLIER      = 1.10
+
 
 # ---------------------------------------------------------------------------
 # 공유 헬퍼
@@ -313,11 +321,12 @@ def fetch_top_services_with_breakdown(
         svc = r.get('service')
         if not svc:
             continue
-        svc_total_map[svc] = float(r.get('service_total') or 0)
+        # 금액(service_total / cost_d1)만 Tax 포함(×1.10). usage_amount(시간)은 과세 대상 아님.
+        svc_total_map[svc] = float(r.get('service_total') or 0) * _TAX_MULTIPLIER
         raw_acc[svc].append({
             'usage_type':   r.get('usage_type', '') or '',
             'iam_user':     _parse_iam_user(r.get('iam_user', '')),
-            'cost_d1':      float(r.get('cost_d1') or 0),
+            'cost_d1':      float(r.get('cost_d1') or 0) * _TAX_MULTIPLIER,
             'count':        int(r.get('resource_count') or 0),
             'usage_amount': float(r.get('usage_amount_total') or 0),
         })
@@ -432,8 +441,9 @@ def fetch_month_new_costs(athena, d1_date: date) -> list:
             'usage_type':  r.get('usage_type', '') or '',
             'iam_user':    _parse_iam_user(r.get('iam_user', '')),
             'usage_human': _humanize_usage_type(r.get('usage_type', '') or ''),
-            'cost_d1':     float(r.get('cost_d1') or 0),
-            'prior_cost':  float(r.get('prior_cost') or 0),
+            # 표시 금액은 Tax 포함(×1.10). SQL HAVING 임계값($10/$1)은 세전 기준 그대로 유지.
+            'cost_d1':     float(r.get('cost_d1') or 0) * _TAX_MULTIPLIER,
+            'prior_cost':  float(r.get('prior_cost') or 0) * _TAX_MULTIPLIER,
             'count':       int(r.get('resource_count') or 0),
         })
     return result
@@ -466,8 +476,9 @@ def fetch_service_mtd_breakdown(athena, d1_date: date) -> dict:
         HAVING SUM(line_item_unblended_cost) > 0.01
     """
     rows = _run_query(athena, sql)
+    # 서비스별 MTD 금액에 Tax 포함(×1.10) — 분모 mtd_total(세후)과 비중% 정합.
     return {
-        r['service']: float(r.get('mtd_total') or 0)
+        r['service']: float(r.get('mtd_total') or 0) * _TAX_MULTIPLIER
         for r in rows if r.get('service')
     }
 
@@ -559,12 +570,14 @@ def fetch_mtd_top_users_with_breakdown(
         user = r.get('iam_user')
         if not user:
             continue
-        user_total_map[user] = float(r.get('user_total') or 0)
+        # 사용자 누계(user_total)·서비스 분해(cost) 모두 Tax 포함(×1.10).
+        # → Main 1 의 [ Top 5 IAM User (EC2 MTD) ] 표(data_cur.py ×1.10)와 값 일치.
+        user_total_map[user] = float(r.get('user_total') or 0) * _TAX_MULTIPLIER
         raw_acc[user].append({
             'service':    r.get('service', '') or '',
             'usage_type': r.get('usage_type', '') or '',
             'count':      int(r.get('resource_count') or 0),
-            'cost':       float(r.get('cost') or 0),
+            'cost':       float(r.get('cost') or 0) * _TAX_MULTIPLIER,
         })
 
     result = []
