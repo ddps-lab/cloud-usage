@@ -37,6 +37,7 @@ from .data_cur import (
     _run_query, _partition,
     _ATHENA_DATABASE, _ATHENA_REGION,
     fetch_mtd_total_cur,
+    fetch_daily_by_service_cur,
     _build_creator_case_sql,
 )
 from .data import fetch_cost_forecast
@@ -54,7 +55,7 @@ _TOP_BREAKDOWN_N     = 5     # 한 서비스 내 IAM × usage_type drill-down �
 # IAM User / 서비스 단위 비용에 Tax 포함 (Usage × 1.10).
 # Q14/Q15/Q16/Q17 은 `line_item_line_item_type != 'Tax'` 로 Tax 라인을 제외하므로
 # 그 자체로는 세전(usage only) 값이다. 반면 분모로 쓰는 mtd_total(fetch_mtd_total_cur)
-# 과 d1_total(Q9) 은 Tax 라인을 포함한 세후 값이라, 세전 분자를 그대로 쓰면
+# 과 d1_total(fetch_daily_by_service_cur) 은 Tax 라인을 포함한 세후 값이라, 세전 분자를 그대로 쓰면
 # 비중%가 ~10% 과소 계상되고 Main 1 의 IAM 표(data_cur.py, 동일하게 ×1.10)와도 어긋난다.
 # → data_cur.py 의 fetch_mtd_by_service_and_creator_cur 와 동일한 ×1.10 규약을 맞춘다.
 _TAX_MULTIPLIER      = 1.10
@@ -1567,8 +1568,13 @@ def collect_all(d1_date: date) -> dict:
         top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
     )
 
-    d1_total = sum(r['cost_d1'] for r in service_rows)
-    d2_total = sum(r['cost_d2'] for r in service_rows)
+    # 어제/그제 총비용은 변화 Top N(Q9, service_rows)이 아니라 그날 비용이 발생한
+    # 모든 서비스를 합산해야 한다. service_rows 는 HAVING ABS(diff)>0.01 + LIMIT 으로
+    # "변화가 큰 서비스"만 추리므로, 변화가 거의 없는(매일 일정한) 서비스의 비용이
+    # 누락돼 실제 총비용보다 작게 잡힌다. → Main 1 (fetch_daily_by_service_cur)과 동일하게
+    # 전체 합산해 "어제 총비용" 값을 일치시킨다.
+    d1_total = sum(fetch_daily_by_service_cur(athena, d1_date).values())
+    d2_total = sum(fetch_daily_by_service_cur(athena, d2_date).values())
 
     mtd_total        = fetch_mtd_total_cur(athena, d1_date)
     mtd_days_elapsed = d1_date.day
