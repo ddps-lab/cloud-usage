@@ -52,12 +52,18 @@ _NEW_COST_PRIOR_CUT  = 1.0   # 이번 달 1일~그제 누적 $1 미만이면 "�
 _TOP_SERVICES_N      = 5     # ■ 현황 노출 서비스 수
 _TOP_BREAKDOWN_N     = 5     # 한 서비스 내 IAM × usage_type drill-down 수
 
-# IAM User / 서비스 단위 비용에 Tax 포함 (Usage × 1.10).
-# Q14/Q15/Q16/Q17 은 `line_item_line_item_type != 'Tax'` 로 Tax 라인을 제외하므로
-# 그 자체로는 세전(usage only) 값이다. 반면 분모로 쓰는 mtd_total(fetch_mtd_total_cur)
-# 과 d1_total(fetch_daily_by_service_cur) 은 Tax 라인을 포함한 세후 값이라, 세전 분자를 그대로 쓰면
-# 비중%가 ~10% 과소 계상되고 Main 1 의 IAM 표(data_cur.py, 동일하게 ×1.10)와도 어긋난다.
-# → data_cur.py 의 fetch_mtd_by_service_and_creator_cur 와 동일한 ×1.10 규약을 맞춘다.
+# IAM User / 서비스 단위 비용에 Tax 포함 추정 (Usage × 1.10).
+#
+# ⚠ 정합성 주의 (2026-06 크레딧 상쇄 수정 이후):
+#   이제 모든 CUR 비용 쿼리가
+#     line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+#   로 Usage 행만 집계한다(= 크레딧/세금 제외, 세전 usage-only).
+#   분자(Q14~Q17)뿐 아니라 분모로 쓰는 mtd_total(fetch_mtd_total_cur)·
+#   d1_total(fetch_daily_by_service_cur) 도 동일하게 usage-only 가 되었다.
+#   → 분자에만 ×1.10 을 적용하면 비중%·세부 합계가 헤드라인 총액보다 ~10% 커진다.
+#   이 계정은 Tax 라인이 사실상 $0 이므로 ×1.10 은 현재 순수 가산 추정값이다.
+#   TODO(결정 필요): (A) ×1.10 폐지(_TAX_MULTIPLIER=1.0) 또는
+#                    (B) 분모(mtd_total/d1_total)에도 ×1.10 적용해 균일화.
 _TAX_MULTIPLIER      = 1.10
 
 
@@ -107,6 +113,7 @@ def fetch_service_diff(athena, d1_date: date, d2_date: date) -> list:
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name
         HAVING ABS(
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -157,6 +164,7 @@ def fetch_usage_type_diff(athena, d1_date: date, d2_date: date) -> list:
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name, line_item_usage_type
         HAVING ABS(
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -212,6 +220,7 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
           AND line_item_resource_id IS NOT NULL
           AND line_item_resource_id != ''
         GROUP BY 1, 2, 3, 4
@@ -290,7 +299,7 @@ def fetch_top_services_with_breakdown(
             WHERE year  = '{year_d1}'
               AND month = '{month_d1}'
               AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
-              AND line_item_line_item_type != 'Tax'
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         ),
         svc_total AS (
             SELECT service, SUM(cost) AS total
@@ -416,7 +425,7 @@ def fetch_month_new_costs(athena, d1_date: date) -> list:
             WHERE year  = '{year_d1}'
               AND month IN ({months})
               AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
-              AND line_item_line_item_type != 'Tax'
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         )
         SELECT
             service,
@@ -472,7 +481,7 @@ def fetch_service_mtd_breakdown(athena, d1_date: date) -> dict:
         WHERE year  = '{year_d1}'
           AND month = '{month_d1}'
           AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
-          AND line_item_line_item_type != 'Tax'
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name
         HAVING SUM(line_item_unblended_cost) > 0.01
     """
@@ -538,7 +547,7 @@ def fetch_mtd_top_users_with_breakdown(
             WHERE year  = '{year_d1}'
               AND month = '{month_d1}'
               AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
-              AND line_item_line_item_type != 'Tax'
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         ),
         user_total AS (
             SELECT iam_user, SUM(cost) AS total

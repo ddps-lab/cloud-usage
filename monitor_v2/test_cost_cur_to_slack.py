@@ -36,6 +36,6 @@ from monitor_v2.cost.report_cur import send_cur_report
 KST = timezone(timedelta(hours=9))
 
 if __name__ == "__main__":
-    today_kst = datetime.now(KST).date()
+    today_kst = datetime.now(KST).date() - timedelta(days=1)
     cost_data = collect_cost_data_cur(today_kst)
     send_cur_report(cost_data)

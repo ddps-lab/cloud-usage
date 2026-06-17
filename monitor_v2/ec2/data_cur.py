@@ -56,6 +56,7 @@ def collect_ec2_cost_by_type_cur(athena, d1_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
           AND product_instance_type != ''
         GROUP BY
             product_instance_type,
@@ -95,6 +96,7 @@ def collect_ec2_cost_by_type_mtd_cur(athena, d1_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
           AND product_instance_type != ''
         GROUP BY
             product_instance_type,
@@ -134,6 +136,7 @@ def collect_spot_cost_cur(athena, d1_date: date) -> tuple:
               AND month = '{m}'
               AND DATE(line_item_usage_start_date)
                   BETWEEN DATE('{start}') AND DATE('{end}')
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
               AND line_item_usage_type LIKE '%SpotUsage%'
         """
         rows = _run_query(athena, sql)
@@ -177,6 +180,7 @@ def collect_instance_cost_cur(athena, d1_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
           AND line_item_resource_id LIKE 'i-%'
           AND product_instance_type != ''
           AND line_item_usage_type  LIKE '%BoxUsage%'

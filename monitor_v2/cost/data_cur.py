@@ -294,6 +294,7 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name
         HAVING SUM(line_item_unblended_cost) > 0
         ORDER BY cost DESC
@@ -342,7 +343,7 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
-          AND line_item_line_item_type != 'Tax'
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY 1, 2
         HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
@@ -379,6 +380,7 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
@@ -424,7 +426,7 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
-          AND line_item_line_item_type != 'Tax'
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY 1, 2
         HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
@@ -466,6 +468,7 @@ def fetch_mtd_by_service_and_region_cur(athena, d1_date: date) -> dict:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
@@ -500,6 +503,7 @@ def fetch_mtd_total_cur(athena, d1_date: date) -> float:
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
     """
     rows = _run_query(athena, sql)
     if rows and rows[0].get('mtd_total'):
