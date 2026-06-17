@@ -1,9 +1,9 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.6"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 5.0, < 5.100.0"
     }
     archive = {
       source  = "hashicorp/archive"
@@ -95,6 +95,7 @@ resource "aws_lambda_function" "monitor_v2" {
       ATHENA_OUTPUT_LOCATION = var.athena_output_location
       ATHENA_DATABASE        = var.athena_database
       ATHENA_WORKGROUP       = var.athena_workgroup
+      ATHENA_REGION          = var.athena_region
       BEDROCK_MODEL_ID       = var.bedrock_model_id
       BEDROCK_REGION         = var.bedrock_region
     }
@@ -114,82 +115,14 @@ resource "aws_lambda_function" "monitor_v2" {
 #   KST 08:00 = UTC 23:00 전날  → cost  전날 데이터
 #   KST 08:10 = UTC 23:10 전날  → ec2   전날 데이터
 #   KST 08:15 = UTC 23:15 전날  → analysis  AI 비용 변화 분석 (Main 3)
-#   KST 22:00 = UTC 13:00       → cost  당일 데이터
-#   KST 22:10 = UTC 13:10       → ec2   당일 데이터
+#   KST 22:00 = UTC 13:00       → cost  전날 데이터
+#   KST 22:10 = UTC 13:10       → ec2   전날 데이터
+#   KST 22:15 = UTC 13:15       → analysis  전날 AI 비용 변화 분석
 
-# ── KST 08:00 cost (전날) ─────────────────────────────────────────────
-resource "aws_cloudwatch_event_rule" "morning_cost" {
-  name                = "${local.function_name}-morning-cost"
-  description         = "KST 08:00 cost report (yesterday)"
-  schedule_expression = "cron(0 23 * * ? *)"
-  state               = "ENABLED"
-}
-
-resource "aws_cloudwatch_event_target" "morning_cost" {
-  rule      = aws_cloudwatch_event_rule.morning_cost.name
-  target_id = "morning-cost"
-  arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "cost", date_mode = "yesterday" })
-}
-
-resource "aws_lambda_permission" "morning_cost" {
-  statement_id  = "AllowEventBridgeMorningCost"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.monitor_v2.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.morning_cost.arn
-}
-
-# ── KST 08:10 ec2 (전날) ──────────────────────────────────────────────
-resource "aws_cloudwatch_event_rule" "morning_ec2" {
-  name                = "${local.function_name}-morning-ec2"
-  description         = "KST 08:10 ec2 report (yesterday)"
-  schedule_expression = "cron(10 23 * * ? *)"
-  state               = "ENABLED"
-}
-
-resource "aws_cloudwatch_event_target" "morning_ec2" {
-  rule      = aws_cloudwatch_event_rule.morning_ec2.name
-  target_id = "morning-ec2"
-  arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "ec2", date_mode = "yesterday" })
-}
-
-resource "aws_lambda_permission" "morning_ec2" {
-  statement_id  = "AllowEventBridgeMorningEc2"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.monitor_v2.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.morning_ec2.arn
-}
-
-# ── KST 08:15 analysis (Main 3: AI 비용 변화 분석) ──────────────────────
-resource "aws_cloudwatch_event_rule" "morning_analysis" {
-  name                = "${local.function_name}-morning-analysis"
-  description         = "KST 08:15 AI cost analysis report (yesterday)"
-  schedule_expression = "cron(15 23 * * ? *)"
-  state               = "ENABLED"
-}
-
-resource "aws_cloudwatch_event_target" "morning_analysis" {
-  rule      = aws_cloudwatch_event_rule.morning_analysis.name
-  target_id = "morning-analysis"
-  arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "analysis", date_mode = "today" })
-}
-
-resource "aws_lambda_permission" "morning_analysis" {
-  statement_id  = "AllowEventBridgeMorningAnalysis"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.monitor_v2.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.morning_analysis.arn
-}
-
-# ── KST 22:00 cost (당일) ─────────────────────────────────────────────
+# ── KST 22:00 cost (전날) ─────────────────────────────────────────────
 resource "aws_cloudwatch_event_rule" "evening_cost" {
   name                = "${local.function_name}-evening-cost"
-  description         = "KST 22:00 cost report (today)"
+  description         = "KST 22:00 cost report (yesterday)"
   schedule_expression = "cron(0 13 * * ? *)"
   state               = "ENABLED"
 }
@@ -198,7 +131,7 @@ resource "aws_cloudwatch_event_target" "evening_cost" {
   rule      = aws_cloudwatch_event_rule.evening_cost.name
   target_id = "evening-cost"
   arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "cost", date_mode = "today" })
+  input     = jsonencode({ report_type = "cost", date_mode = "yesterday" })
 }
 
 resource "aws_lambda_permission" "evening_cost" {
@@ -209,10 +142,10 @@ resource "aws_lambda_permission" "evening_cost" {
   source_arn    = aws_cloudwatch_event_rule.evening_cost.arn
 }
 
-# ── KST 22:10 ec2 (당일) ──────────────────────────────────────────────
+# ── KST 22:10 ec2 (전날) ──────────────────────────────────────────────
 resource "aws_cloudwatch_event_rule" "evening_ec2" {
   name                = "${local.function_name}-evening-ec2"
-  description         = "KST 22:10 ec2 report (today)"
+  description         = "KST 22:10 ec2 report (yesterday)"
   schedule_expression = "cron(10 13 * * ? *)"
   state               = "ENABLED"
 }
@@ -221,7 +154,7 @@ resource "aws_cloudwatch_event_target" "evening_ec2" {
   rule      = aws_cloudwatch_event_rule.evening_ec2.name
   target_id = "evening-ec2"
   arn       = aws_lambda_function.monitor_v2.arn
-  input     = jsonencode({ report_type = "ec2", date_mode = "today" })
+  input     = jsonencode({ report_type = "ec2", date_mode = "yesterday" })
 }
 
 resource "aws_lambda_permission" "evening_ec2" {
@@ -230,6 +163,29 @@ resource "aws_lambda_permission" "evening_ec2" {
   function_name = aws_lambda_function.monitor_v2.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.evening_ec2.arn
+}
+
+# ── KST 22:15 analysis (AI 비용 변화 분석, 전날) ──────────────────────
+resource "aws_cloudwatch_event_rule" "evening_analysis" {
+  name                = "${local.function_name}-evening-analysis"
+  description         = "KST 22:15 AI cost analysis report (yesterday)"
+  schedule_expression = "cron(15 13 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "evening_analysis" {
+  rule      = aws_cloudwatch_event_rule.evening_analysis.name
+  target_id = "evening-analysis"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "analysis", date_mode = "yesterday" })
+}
+
+resource "aws_lambda_permission" "evening_analysis" {
+  statement_id  = "AllowEventBridgeEveningAnalysis"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.evening_analysis.arn
 }
 
 # ── CloudWatch Logs ───────────────────────────────────────────────────

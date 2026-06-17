@@ -37,6 +37,14 @@ uv sync
 > `ATHENA_OUTPUT_LOCATION`은 CUR 데이터 위치가 아닌 Athena **쿼리 결과**가 저장되는 S3 경로다.
 > AWS 콘솔 → Athena → Settings → Query result location 값과 동일.
 
+#### AI 분석 (Main 3) 전용 추가 변수
+
+| 키 | 필수 | 설명 |
+|----|------|------|
+| `BEDROCK_MODEL_ID` | ✅ | Bedrock 모델 ID (예: `amazon.nova-micro-v1:0`) |
+| `BEDROCK_REGION` | ✅ | Bedrock 리전 (예: `us-east-1`) |
+| `NEW_COST_THRESHOLD` | ⬜ | 이번 달 신규 발생 판단 임계값 (기본: `10`, 단위: USD) |
+
 #### IAM → Slack 사용자 매핑 (DM 발송용, 선택)
 
 `monitor_v2/iam_to_slack.json` 파일로 관리한다.
@@ -98,6 +106,26 @@ uv run python -m monitor_v2.test_cost_cur_to_slack
 # EC2 리포트
 uv run python -m monitor_v2.test_ec2_cur_to_slack
 ```
+
+---
+
+### AI 분석 리포트 (Main 3)
+
+CUR 데이터를 Bedrock Nova Micro로 분석해 자연어 한국어 요약을 Slack에 전송한다.
+
+```bash
+# AI 분석 리포트 (Main 3)
+uv run python -m monitor_v2.test_main3
+```
+
+리포트 구성:
+
+- **상단 수치**: 어제 총비용 / 이번 달 누계 (N일 경과) / 월말 예상
+- **AI 요약 (3문단 통찰형)**:
+  1. 결론 한 줄 + 월간 흐름
+  2. 어제 비용의 driver 분석 (서비스 비중 + IAM × 인스턴스 타입 + 1대 평균 가동 시간 + 서비스별 페이스 비교)
+  3. 이번 달 들어 새로 비용이 발생한 서비스 / 동일 사용자 신호 (있을 때만, 없으면 생략)
+- **Q9/Q10/Q11 raw 표**: 서비스별 / 타입별 / 리소스 ID별 어제 vs 그제 변화 — drill-down 검증용
 
 ---
 

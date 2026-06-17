@@ -39,9 +39,169 @@ log = logging.getLogger(__name__)
 _ATHENA_DATABASE        = os.environ.get('ATHENA_DATABASE')
 _ATHENA_OUTPUT_LOCATION = os.environ.get('ATHENA_OUTPUT_LOCATION')
 _ATHENA_WORKGROUP       = os.environ.get('ATHENA_WORKGROUP', 'primary')
+_ATHENA_REGION          = os.environ.get('ATHENA_REGION', 'ap-northeast-2')
 
 _POLL_INTERVAL = 1.5   # seconds
 _MAX_WAIT      = 120   # seconds
+
+
+# ---------------------------------------------------------------------------
+# 공용 creator fallback CASE (Q3/Q5/Q11/Q14/Q15/Q17 공유)
+#
+# 우선순위:
+#   0. 공통 서비스 예외   → '[공통] Data Transfer / Cost Explorer / Support'
+#   1. aws:createdBy      → IAM User name
+#   2. lambda:createdBy   → '[Lambda] <value>'
+#   3. Requester/Username → '[Requester] / [User] <value>'
+#   4. Project*           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+#   5. EKS                → '[EKS] <cluster>[/<nodegroup>]'
+#   6. Elastic Beanstalk  → '[EB] <value>'
+#   7. AWS 자동 관리       → '[MGN] / [SageMaker] managed-resource'
+#   8. Service / Group    → '[Service] / [Group] <value>'
+#   9. Env / STAGE / Deploy → '[Env] / [Deploy] <value>'
+#  10. Name / NAME        → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+#  11. usage_type fallback (Usage 라인만)
+#  12. 기타
+#
+# CUR 은 그 계정 리소스가 한 번이라도 그 태그 키를 사용했을 때만 해당
+# resource_tags_* 컬럼을 생성한다. 따라서 계정별 cur_logs 스키마가 다름.
+# information_schema.columns 로 사용 가능한 컬럼을 콜드스타트 시 1회 조회한 뒤,
+# 존재하는 컬럼만 골라서 동적으로 CASE WHEN 을 조립한다.
+# ---------------------------------------------------------------------------
+
+# 정적 prefix/suffix — 모든 계정에서 항상 사용 가능한 컬럼만 참조
+_CREATOR_CASE_PREFIX = """    CASE
+        WHEN product_product_name = 'AWS Data Transfer'      THEN '[공통] Data Transfer'
+        WHEN product_product_name = 'AWS Cost Explorer'      THEN '[공통] Cost Explorer'
+        WHEN product_product_name = 'AWS Support [Business]' THEN '[공통] Support'
+
+"""
+
+_CREATOR_CASE_SUFFIX = """
+        WHEN line_item_line_item_type = 'Usage'
+            THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
+
+        ELSE CONCAT(product_product_name, ' - 기타')
+    END"""
+
+# EKS 는 cluster 필수 + nodegroup 옵셔널 구조라 별도 처리. 마커로 위치만 보존.
+_EKS_RULE = '__EKS__'
+
+# 순서대로 평가되는 동적 룰: (필수 컬럼, WHEN-THEN SQL).
+# 컬럼이 cur_logs 에 존재할 때만 해당 절을 포함한다. 기존 우선순위 유지.
+_CREATOR_RULES_ORDERED: list[tuple[str, str]] = [
+    ("resource_tags_aws_created_by",
+     "WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL\n"
+     "            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)"),
+    ("resource_tags_user_lambda_created_by",
+     "WHEN NULLIF(resource_tags_user_lambda_created_by, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Lambda] ', resource_tags_user_lambda_created_by)"),
+    ("resource_tags_user_requester",
+     "WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Requester] ', resource_tags_user_requester)"),
+    ("resource_tags_user_username",
+     "WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL\n"
+     "            THEN CONCAT('[User] ', resource_tags_user_username)"),
+    ("resource_tags_user_project",
+     "WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL\n"
+     "            THEN SPLIT_PART(resource_tags_user_project, '-', 1)"),
+    ("resource_tags_user_project_name",
+     "WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL\n"
+     "            THEN SPLIT_PART(resource_tags_user_project_name, '-', 1)"),
+    (_EKS_RULE, ""),
+    ("resource_tags_user_elasticbeanstalk_environment_name",
+     "WHEN NULLIF(resource_tags_user_elasticbeanstalk_environment_name, '') IS NOT NULL\n"
+     "            THEN CONCAT('[EB] ', resource_tags_user_elasticbeanstalk_environment_name)"),
+    ("resource_tags_user_elasticbeanstalk_environment_id",
+     "WHEN NULLIF(resource_tags_user_elasticbeanstalk_environment_id, '') IS NOT NULL\n"
+     "            THEN CONCAT('[EB] ', resource_tags_user_elasticbeanstalk_environment_id)"),
+    ("resource_tags_user_a_w_s_application_migration_service_managed",
+     "WHEN NULLIF(resource_tags_user_a_w_s_application_migration_service_managed, '') IS NOT NULL\n"
+     "            THEN '[MGN] ApplicationMigrationService'"),
+    ("resource_tags_user_managed_by_amazon_sage_maker_resource",
+     "WHEN NULLIF(resource_tags_user_managed_by_amazon_sage_maker_resource, '') IS NOT NULL\n"
+     "            THEN '[SageMaker] managed-resource'"),
+    ("resource_tags_user_service",
+     "WHEN NULLIF(resource_tags_user_service, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Service] ', resource_tags_user_service)"),
+    ("resource_tags_user_group",
+     "WHEN NULLIF(resource_tags_user_group, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Group] ', resource_tags_user_group)"),
+    ("resource_tags_user_environment",
+     "WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Env] ', resource_tags_user_environment)"),
+    ("resource_tags_user_s_t_a_g_e",
+     "WHEN NULLIF(resource_tags_user_s_t_a_g_e, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Env] ', resource_tags_user_s_t_a_g_e)"),
+    ("resource_tags_user_deploy",
+     "WHEN NULLIF(resource_tags_user_deploy, '') IS NOT NULL\n"
+     "            THEN CONCAT('[Deploy] ', resource_tags_user_deploy)"),
+    ("resource_tags_user_name",
+     "WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL\n"
+     "            THEN SPLIT_PART(resource_tags_user_name, '-', 1)"),
+    ("resource_tags_user_n_a_m_e",
+     "WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL\n"
+     "            THEN SPLIT_PART(resource_tags_user_n_a_m_e, '-', 1)"),
+]
+
+# 모듈 전역 캐시 (콜드스타트 시 1회 채워짐)
+_AVAILABLE_TAG_COLUMNS: set[str] | None = None
+
+
+def _load_available_tag_columns(athena) -> set[str]:
+    """cur_logs 의 resource_tags_* 컬럼 set 을 반환 (모듈 전역 캐시)."""
+    global _AVAILABLE_TAG_COLUMNS
+    if _AVAILABLE_TAG_COLUMNS is not None:
+        return _AVAILABLE_TAG_COLUMNS
+    sql = f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = '{_ATHENA_DATABASE}'
+          AND table_name   = 'cur_logs'
+          AND column_name LIKE 'resource_tags_%'
+    """
+    rows = _run_query(athena, sql)
+    _AVAILABLE_TAG_COLUMNS = {r['column_name'] for r in rows if r.get('column_name')}
+    log.info("CUR resource_tags 컬럼 %d개 감지", len(_AVAILABLE_TAG_COLUMNS))
+    return _AVAILABLE_TAG_COLUMNS
+
+
+def _eks_clause(available: set[str]) -> str | None:
+    """EKS 룰 — cluster 필수, nodegroup 옵셔널."""
+    cluster   = "resource_tags_user_eks_cluster_name"
+    nodegroup = "resource_tags_user_eks_nodegroup_name"
+    if cluster not in available:
+        return None
+    if nodegroup in available:
+        return (
+            f"WHEN NULLIF({cluster}, '') IS NOT NULL\n"
+            f"            THEN CONCAT(\n"
+            f"                '[EKS] ',\n"
+            f"                {cluster},\n"
+            f"                CASE WHEN NULLIF({nodegroup}, '') IS NOT NULL\n"
+            f"                     THEN CONCAT('/', {nodegroup})\n"
+            f"                     ELSE '' END\n"
+            f"            )"
+        )
+    return (
+        f"WHEN NULLIF({cluster}, '') IS NOT NULL\n"
+        f"            THEN CONCAT('[EKS] ', {cluster})"
+    )
+
+
+def _build_creator_case_sql(athena) -> str:
+    """계정에 존재하는 resource_tags_* 컬럼만 사용하는 CASE WHEN SQL 을 조립."""
+    available = _load_available_tag_columns(athena)
+    middle: list[str] = []
+    for col, when_then in _CREATOR_RULES_ORDERED:
+        if col == _EKS_RULE:
+            clause = _eks_clause(available)
+            if clause:
+                middle.append(clause)
+        elif col in available:
+            middle.append(when_then)
+    middle_sql = "".join("        " + c + "\n" for c in middle)
+    return _CREATOR_CASE_PREFIX + middle_sql + _CREATOR_CASE_SUFFIX
 
 
 # ---------------------------------------------------------------------------
@@ -130,12 +290,13 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
         SELECT
             product_product_name                  AS service,
             SUM(line_item_unblended_cost)         AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{target_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name
-        HAVING SUM(line_item_unblended_cost) > 0.01
+        HAVING SUM(line_item_unblended_cost) > 0
         ORDER BY cost DESC
     """
     rows = _run_query(athena, sql)
@@ -149,7 +310,22 @@ def fetch_daily_by_service_cur(athena, target_date: date) -> dict:
 def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     """
     Q3 해당.
-    D-1 서비스 + aws:createdBy 태그별 비용.
+    D-1 서비스 + 다단계 태그 fallback 으로 산출한 creator 별 비용.
+
+    Fallback 우선순위 (위에서 아래):
+        0. 공통 서비스 예외       → '[공통] Data Transfer / Cost Explorer / Support'
+        1. aws:createdBy          → IAM User name
+        2. lambda:createdBy       → '[Lambda] <value>'
+        3. Requester / Username   → '[Requester] / [User] <value>'
+        4. Project / ProjectName  → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+        5. eks:cluster-name(+nodegroup) → '[EKS] <cluster>/<nodegroup>'
+        6. elasticbeanstalk:env-name/id → '[EB] <value>'
+        7. AWS 자동 관리 (MGN, SageMaker) → '[MGN] / [SageMaker] managed-resource'
+        8. Service / Group        → '[Service] / [Group] <value>'
+        9. Environment / STAGE / Deploy → '[Env] / [Deploy] <value>'
+        10. Name / NAME           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+        11. usage_type            → '<service> - <usage_type>'
+        12. 그 외                 → '<service> - 기타'
 
     NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
 
@@ -157,75 +333,18 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
         {service: {creator: float}}
     """
     year, month = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
     sql = f"""
         SELECT
-            product_product_name                                                AS service,
-            CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
-                WHEN product_product_name = 'AWS Data Transfer'
-                    THEN '[공통] Data Transfer'
-                WHEN product_product_name = 'AWS Cost Explorer'
-                    THEN '[공통] Cost Explorer'
-                WHEN product_product_name = 'AWS Support [Business]'
-                    THEN '[공통] Support'
-                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
-                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
-                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
-                WHEN line_item_line_item_type = 'Usage'
-                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
-                ELSE CONCAT(product_product_name, ' - 기타')
-            END                                                                 AS creator,
-            SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+            product_product_name AS service,
+            {creator_case_sql} AS creator,
+            SUM(line_item_unblended_cost) AS cost
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
-          AND line_item_line_item_type != 'Tax'
-        GROUP BY
-            product_product_name,
-            CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
-                WHEN product_product_name = 'AWS Data Transfer'
-                    THEN '[공통] Data Transfer'
-                WHEN product_product_name = 'AWS Cost Explorer'
-                    THEN '[공통] Cost Explorer'
-                WHEN product_product_name = 'AWS Support [Business]'
-                    THEN '[공통] Support'
-                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
-                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
-                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
-                WHEN line_item_line_item_type = 'Usage'
-                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
-                ELSE CONCAT(product_product_name, ' - 기타')
-            END
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        GROUP BY 1, 2
         HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
     """
@@ -257,10 +376,11 @@ def fetch_daily_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
@@ -295,76 +415,19 @@ def fetch_mtd_by_service_and_creator_cur(athena, d1_date: date) -> dict:
     if mtd_start >= d1_date:
         return {}
     year, month = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
     sql = f"""
         SELECT
-            product_product_name                                                AS service,
-            CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
-                WHEN product_product_name = 'AWS Data Transfer'
-                    THEN '[공통] Data Transfer'
-                WHEN product_product_name = 'AWS Cost Explorer'
-                    THEN '[공통] Cost Explorer'
-                WHEN product_product_name = 'AWS Support [Business]'
-                    THEN '[공통] Support'
-                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
-                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
-                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
-                WHEN line_item_line_item_type = 'Usage'
-                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
-                ELSE CONCAT(product_product_name, ' - 기타')
-            END                                                                 AS creator,
-            SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+            product_product_name AS service,
+            {creator_case_sql} AS creator,
+            SUM(line_item_unblended_cost) AS cost
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
-          AND line_item_line_item_type != 'Tax'
-        GROUP BY
-            product_product_name,
-            CASE
-                WHEN line_item_line_item_type = 'Tax'
-                    THEN CONCAT('[Tax] ', product_product_name)
-                WHEN product_product_name = 'AWS Data Transfer'
-                    THEN '[공통] Data Transfer'
-                WHEN product_product_name = 'AWS Cost Explorer'
-                    THEN '[공통] Cost Explorer'
-                WHEN product_product_name = 'AWS Support [Business]'
-                    THEN '[공통] Support'
-                WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL
-                    THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)
-                WHEN NULLIF(resource_tags_user_username, '') IS NOT NULL
-                    THEN CONCAT('[username] ', resource_tags_user_username)
-                WHEN NULLIF(resource_tags_user_requester, '') IS NOT NULL
-                    THEN CONCAT('[requester] ', resource_tags_user_requester)
-                WHEN NULLIF(resource_tags_user_project, '') IS NOT NULL
-                    THEN CONCAT('[project] ', resource_tags_user_project)
-                WHEN NULLIF(resource_tags_user_project_name, '') IS NOT NULL
-                    THEN CONCAT('[project_name] ', resource_tags_user_project_name)
-                WHEN NULLIF(resource_tags_user_name, '') IS NOT NULL
-                    THEN resource_tags_user_name
-                WHEN NULLIF(resource_tags_user_n_a_m_e, '') IS NOT NULL
-                    THEN CONCAT('[n_a_m_e] ', resource_tags_user_n_a_m_e)
-                WHEN NULLIF(resource_tags_user_environment, '') IS NOT NULL
-                    THEN CONCAT('[environment] ', resource_tags_user_environment)
-                WHEN line_item_line_item_type = 'Usage'
-                    THEN CONCAT(product_product_name, ' - ', line_item_usage_type)
-                ELSE CONCAT(product_product_name, ' - 기타')
-            END
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        GROUP BY 1, 2
         HAVING SUM(line_item_unblended_cost) > 0.1
         ORDER BY service, cost DESC
     """
@@ -400,11 +463,12 @@ def fetch_mtd_by_service_and_region_cur(athena, d1_date: date) -> dict:
             product_product_name                                                AS service,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
             SUM(line_item_unblended_cost)                                       AS cost
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY
             product_product_name,
             COALESCE(NULLIF(product_region_code, ''), 'global')
@@ -434,11 +498,12 @@ def fetch_mtd_total_cur(athena, d1_date: date) -> float:
     year, month = _partition(d1_date)
     sql = f"""
         SELECT SUM(line_item_unblended_cost) AS mtd_total
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year}'
           AND month = '{month}'
           AND DATE(line_item_usage_start_date)
               BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
     """
     rows = _run_query(athena, sql)
     if rows and rows[0].get('mtd_total'):
@@ -472,7 +537,7 @@ def collect_all(today_kst: date) -> dict:
             'forecast':       float,  # CE API (0.0 = 예측 불가)
         }
     """
-    athena = boto3.client('athena', region_name='ap-northeast-2')
+    athena = boto3.client('athena', region_name=_ATHENA_REGION)
     ce     = boto3.client('ce',     region_name='us-east-1')
 
     d1_date = today_kst #- timedelta(days=1)

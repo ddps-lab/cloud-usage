@@ -79,7 +79,7 @@ def fetch_daily_by_service_and_creator(ce, period: dict) -> dict:
 
     Returns:
         {service: {creator_label: float}}
-        미태깅 리소스의 creator_label = '(태그 없음 / 공용)'
+        aws:createdBy 태그없음 리소스는 결과에서 제외 (CUR fallback 동작과 일치)
     """
     resp = ce.get_cost_and_usage(
         TimePeriod=period,
@@ -95,7 +95,9 @@ def fetch_daily_by_service_and_creator(ce, period: dict) -> dict:
         service = group['Keys'][0]
         raw_tag = group['Keys'][1]          # "aws:createdBy$<value>"
         creator = raw_tag.split('$', 1)[1] if '$' in raw_tag else raw_tag
-        creator = creator or 'aws:createdBy 태그 없음'
+        # aws:createdBy 태그없음 → 표시하지 않음 (CUR fallback 동작과 일치)
+        if not creator:
+            continue
         amount  = float(group['Metrics']['UnblendedCost']['Amount'])
         # IAM User별 비용에 Tax 포함 (Usage × 1.10)
         amount_with_tax = amount * 1.10
@@ -153,7 +155,9 @@ def fetch_mtd_by_service_and_creator(ce, period: dict) -> dict:
         service = group['Keys'][0]
         raw_tag = group['Keys'][1]
         creator = raw_tag.split('$', 1)[1] if '$' in raw_tag else raw_tag
-        creator = creator or 'aws:createdBy 태그 없음'
+        # aws:createdBy 태그없음 → 표시하지 않음 (CUR fallback 동작과 일치)
+        if not creator:
+            continue
         amount  = float(group['Metrics']['UnblendedCost']['Amount'])
         # IAM User별 비용에 Tax 포함 (Usage × 1.10)
         amount_with_tax = amount * 1.10

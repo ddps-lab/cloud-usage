@@ -40,6 +40,12 @@ variable "athena_workgroup" {
   default     = "primary"
 }
 
+variable "athena_region" {
+  description = "Athena 클라이언트 리전 (e.g., ap-northeast-2, us-east-1)"
+  type        = string
+  default     = "ap-northeast-2"
+}
+
 # ── Bedrock (AI 분석) ──────────────────────────────────────────────────
 
 variable "bedrock_model_id" {

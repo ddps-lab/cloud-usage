@@ -19,12 +19,11 @@ output "lambda_role_arn" {
 }
 
 output "eventbridge_rule_names" {
-  description = "EventBridge 규칙 이름 목록 (4개 스케줄)"
+  description = "EventBridge 규칙 이름 목록 (3개 스케줄, KST 17:xx)"
   value = {
-    morning_cost = aws_cloudwatch_event_rule.morning_cost.name
-    morning_ec2  = aws_cloudwatch_event_rule.morning_ec2.name
-    evening_cost = aws_cloudwatch_event_rule.evening_cost.name
-    evening_ec2  = aws_cloudwatch_event_rule.evening_ec2.name
+    evening_cost     = aws_cloudwatch_event_rule.evening_cost.name
+    evening_ec2      = aws_cloudwatch_event_rule.evening_ec2.name
+    evening_analysis = aws_cloudwatch_event_rule.evening_analysis.name
   }
 }
 

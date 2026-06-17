@@ -21,12 +21,23 @@ Incoming Webhook과의 차이:
 """
 
 import os
+import traceback as _traceback
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-BOT_TOKEN  = os.environ['SLACK_BOT_TOKEN']
-CHANNEL_ID = os.environ['SLACK_CHANNEL_ID']
+from ..utils.blocks import (
+    split_by_aggregate as _split_by_aggregate,
+    header        as _header,
+    section       as _section,
+    fields_section as _fields_section,
+)
+
+BOT_TOKEN    = os.environ['SLACK_BOT_TOKEN']
+CHANNEL_ID   = os.environ['SLACK_CHANNEL_ID']
+# AWS 계정 별칭 (표시용). Terraform 의 var.account_name 에서 주입.
+# 미설정 시에도 에러 알림 자체는 보내야 하므로 'unknown-account' 로 폴백.
+ACCOUNT_NAME = os.environ.get('ACCOUNT_NAME', 'unknown-account')
 
 _client = WebClient(token=BOT_TOKEN)
 
@@ -54,21 +65,30 @@ def post_blocks(blocks: list, fallback_text: str = '', thread_ts: str = None) ->
     """
     Block Kit 블록 배열을 채널에 전송한다.
 
+    Slack은 한 메시지 내 markdown 블록 합산 10,000자를 초과하면 invalid_blocks 에러를 반환한다.
+    이를 방지하기 위해 split_by_aggregate()로 블록을 안전한 단위로 분할해 순차 발송한다.
+    분할이 일어나지 않는 경우 동작은 단일 발송과 동일하다.
+
     Args:
         blocks:        slack_sdk Block 객체 또는 dict 리스트
         fallback_text: 알림 미리보기에 표시될 텍스트 (blocks 미지원 환경 대비)
         thread_ts:     스레드로 달 경우 부모 메시지의 ts. None이면 새 메인 메시지.
 
     Returns:
-        전송된 메시지의 ts 문자열
+        첫 번째로 전송된 메시지의 ts 문자열 (스레드 부모로 재사용 가능)
     """
     serialized = [b.to_dict() if hasattr(b, 'to_dict') else b for b in blocks]
-    kwargs = {'channel': CHANNEL_ID, 'blocks': serialized, 'text': fallback_text}
-    if thread_ts:
-        kwargs['thread_ts'] = thread_ts
+    batches    = _split_by_aggregate(serialized)
 
-    response = _client.chat_postMessage(**kwargs)
-    return response['ts']
+    first_ts = None
+    for batch in batches:
+        kwargs = {'channel': CHANNEL_ID, 'blocks': batch, 'text': fallback_text}
+        if thread_ts:
+            kwargs['thread_ts'] = thread_ts
+        response = _client.chat_postMessage(**kwargs)
+        if first_ts is None:
+            first_ts = response['ts']
+    return first_ts
 
 
 def send_dm(slack_user_id: str, text: str) -> None:
@@ -90,13 +110,42 @@ def send_dm(slack_user_id: str, text: str) -> None:
         print(f"[DM 발송 실패] user={slack_user_id}, error={e.response['error']}")
 
 
-def post_error(context: str, error: Exception) -> None:
+def post_error(context: str, error: Exception, meta: dict = None) -> None:
     """
-    에러 발생 시 채널에 알림을 전송한다.
-    전송 자체가 실패해도 예외를 삼켜 Lambda 종료를 막지 않는다.
+    에러 발생 시 채널에 Block Kit 알림을 전송한다.
+
+    Args:
+        context: 에러 발생 단계 식별자 (예: 'cost_collect', 'ec2_report', 'ai_analysis')
+        error:   잡힌 예외 객체
+        meta:    추가 메타데이터 (report_type / date_mode / account_id / d1_date 등)
+
+    동작:
+        - 헤더 + 메타 필드(2열) + 에러 메시지 + traceback 마지막 10줄
+        - Block Kit 발송 실패 시 plain text 한 줄로 fallback
+        - 그래도 실패하면 조용히 삼켜 Lambda 종료를 막지 않는다.
     """
-    msg = f"[monitor_v2] 오류 발생\n컨텍스트: {context}\n오류: {str(error)}"
+    error_type = type(error).__name__
+    error_msg  = (str(error) or '(메시지 없음)')[:500]
+
+    tb_text  = ''.join(_traceback.format_exception(type(error), error, error.__traceback__))
+    tb_tail  = '\n'.join(tb_text.splitlines()[-10:])[:2500]
+
+    fields = [f"*단계*\n`{context}`", f"*에러 타입*\n`{error_type}`"]
+    for k, v in (meta or {}).items():
+        fields.append(f"*{k}*\n`{v}`")
+
+    blocks = [
+        _header(f"🚨 Daily Report 오류  |  {ACCOUNT_NAME}"),
+        _fields_section(fields),
+        _section(f"*에러 메시지*\n```{error_msg}```"),
+        _section(f"*Traceback (last 10 lines)*\n```{tb_tail}```"),
+    ]
+
+    fallback = f"[{ACCOUNT_NAME}] Daily Report {context} 오류: {error_type}: {error_msg[:200]}"
     try:
-        post_message(msg)
+        post_blocks(blocks, fallback_text=fallback)
     except Exception:
-        pass
+        try:
+            post_message(fallback)
+        except Exception:
+            pass

@@ -1,33 +1,85 @@
 """
 monitor_v2/cost/analysis.py
 
-CUR Athena 기반 비용 증감 원인 분석 + Amazon Nova Micro LLM 요약.
+CUR Athena 기반 비용 분석 + Amazon Nova Micro LLM 요약.
 
-3단계 드릴다운:
-    Q9   서비스별           (product_product_name)
-    Q10  리소스 타입별      (line_item_usage_type)
-    Q11  리소스 ID별        (line_item_resource_id)
+LLM 입력 데이터 (AI 요약용):
+    Q14  fetch_top_services_with_breakdown
+         어제 절대 비용 Top N 서비스 + IAM × usage_type 분해
+         → ■ 어제 비용 상위 (현황) 섹션 데이터
+    Q15  fetch_month_new_costs
+         이번 달 들어 처음 발생한 큰 비용 항목
+         → ▲ 이번 달 신규 발생 섹션 데이터
+    MTD  fetch_mtd_total_cur + fetch_cost_forecast
+         이번 달 누계 + 월말 예상 → 월간 맥락 단락
+
+Slack 테이블 raw 데이터 (LLM 입력 X, 표만 노출):
+    Q9   fetch_service_diff       서비스별 어제 vs 그제 변화
+    Q10  fetch_usage_type_diff    usage_type별 변화
+    Q11  fetch_resource_diff      리소스 ID별 변화
 
 환경변수:
-    BEDROCK_MODEL_ID    기본: amazon.nova-micro-v1:0
-    BEDROCK_REGION      기본: us-east-1  (Nova Micro 지원 리전)
+    BEDROCK_MODEL_ID         기본: amazon.nova-micro-v1:0
+    BEDROCK_REGION           기본: us-east-1
+    NEW_COST_THRESHOLD       기본: 10        (이번 달 신규 판단 — 어제 ≥ $X)
 """
 
 import os
 import json
-from pprint import pprint
+import re
+from collections import defaultdict
+from datetime import date, timedelta
 
 import boto3
 import logging
-from datetime import date, timedelta
 
-from .data_cur import _run_query, _partition
+from .data_cur import (
+    _run_query, _partition,
+    _ATHENA_DATABASE, _ATHENA_REGION,
+    fetch_mtd_total_cur,
+    fetch_daily_by_service_cur,
+    _build_creator_case_sql,
+)
+from .data import fetch_cost_forecast
 
 log = logging.getLogger(__name__)
 
-_BEDROCK_MODEL_ID = os.environ.get('BEDROCK_MODEL_ID')
-_BEDROCK_REGION   = os.environ.get('BEDROCK_REGION')
-_TOP_N            = 10
+_BEDROCK_MODEL_ID    = os.environ.get('BEDROCK_MODEL_ID')
+_BEDROCK_REGION      = os.environ.get('BEDROCK_REGION')
+_TOP_N               = 10
+_NEW_COST_THRESHOLD  = float(os.environ.get('NEW_COST_THRESHOLD', '10'))
+_NEW_COST_PRIOR_CUT  = 1.0   # 이번 달 1일~그제 누적 $1 미만이면 "사실상 안 쓴" 것으로 간주
+_TOP_SERVICES_N      = 5     # ■ 현황 노출 서비스 수
+_TOP_BREAKDOWN_N     = 5     # 한 서비스 내 IAM × usage_type drill-down 수
+
+# IAM User / 서비스 단위 비용에 Tax 포함 추정 (Usage × 1.10).
+#
+# ⚠ 정합성 주의 (2026-06 크레딧 상쇄 수정 이후):
+#   이제 모든 CUR 비용 쿼리가
+#     line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+#   로 Usage 행만 집계한다(= 크레딧/세금 제외, 세전 usage-only).
+#   분자(Q14~Q17)뿐 아니라 분모로 쓰는 mtd_total(fetch_mtd_total_cur)·
+#   d1_total(fetch_daily_by_service_cur) 도 동일하게 usage-only 가 되었다.
+#   → 분자에만 ×1.10 을 적용하면 비중%·세부 합계가 헤드라인 총액보다 ~10% 커진다.
+#   이 계정은 Tax 라인이 사실상 $0 이므로 ×1.10 은 현재 순수 가산 추정값이다.
+#   TODO(결정 필요): (A) ×1.10 폐지(_TAX_MULTIPLIER=1.0) 또는
+#                    (B) 분모(mtd_total/d1_total)에도 ×1.10 적용해 균일화.
+_TAX_MULTIPLIER      = 1.10
+
+
+# ---------------------------------------------------------------------------
+# 공유 헬퍼
+# ---------------------------------------------------------------------------
+
+def _parse_iam_user(raw: str) -> str:
+    # SQL creator CASE 가 이미 파싱해 넘기므로 대부분 그대로 반환.
+    # 레거시 raw 포맷("IAMUser:AIDA...:user", "AssumedRole:...:role")만 추가 파싱.
+    if not raw:
+        return ''
+    if raw.startswith('IAMUser:') or raw.startswith('AssumedRole:'):
+        parts = raw.split(':')
+        return parts[2] if len(parts) >= 3 else raw
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +109,11 @@ def fetch_service_diff(athena, d1_date: date, d2_date: date) -> list:
                      THEN line_item_unblended_cost ELSE 0 END)
           - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d2_date}')
                      THEN line_item_unblended_cost ELSE 0 END) AS diff
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name
         HAVING ABS(
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -107,10 +160,11 @@ def fetch_usage_type_diff(athena, d1_date: date, d2_date: date) -> list:
                      THEN line_item_unblended_cost ELSE 0 END)
           - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d2_date}')
                      THEN line_item_unblended_cost ELSE 0 END) AS diff
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
         GROUP BY product_product_name, line_item_usage_type
         HAVING ABS(
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
@@ -146,13 +200,14 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
     year_d1, month_d1 = _partition(d1_date)
     year_d2, month_d2 = _partition(d2_date)
     months = f"'{month_d1}'" if month_d1 == month_d2 else f"'{month_d1}', '{month_d2}'"
+    creator_case_sql = _build_creator_case_sql(athena)
 
     sql = f"""
         SELECT
             product_product_name AS service,
             line_item_usage_type AS usage_type,
             line_item_resource_id AS resource_id,
-            COALESCE(resource_tags_aws_created_by, '') AS iam_user,
+            {creator_case_sql} AS iam_user,
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
                      THEN line_item_unblended_cost ELSE 0 END) AS cost_d1,
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d2_date}')
@@ -161,14 +216,14 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
                      THEN line_item_unblended_cost ELSE 0 END)
           - SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d2_date}')
                      THEN line_item_unblended_cost ELSE 0 END) AS diff
-        FROM hyu_ddps_logs.cur_logs
+        FROM {_ATHENA_DATABASE}.cur_logs
         WHERE year  = '{year_d1}'
           AND month IN ({months})
           AND DATE(line_item_usage_start_date) IN (DATE('{d1_date}'), DATE('{d2_date}'))
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
           AND line_item_resource_id IS NOT NULL
           AND line_item_resource_id != ''
-        GROUP BY product_product_name, line_item_usage_type, line_item_resource_id,
-                 COALESCE(resource_tags_aws_created_by, '')
+        GROUP BY 1, 2, 3, 4
         HAVING ABS(
             SUM(CASE WHEN DATE(line_item_usage_start_date) = DATE('{d1_date}')
                      THEN line_item_unblended_cost ELSE 0 END)
@@ -179,24 +234,394 @@ def fetch_resource_diff(athena, d1_date: date, d2_date: date) -> list:
         LIMIT {_TOP_N}
     """
 
-    def _parse_iam_user(raw: str) -> str:
-        # "IAMUser:AIDA3OGATNBRMEBUIOEWO:mhsong" → "mhsong"
-        parts = raw.split(':')
-        return parts[2] if len(parts) >= 3 else raw
-
     rows = _run_query(athena, sql)
     return [
         {
             'service':     r['service'],
             'usage_type':  r.get('usage_type', ''),
             'resource_id': r.get('resource_id', ''),
-            'iam_user':    _parse_iam_user(r['iam_user']) if r.get('iam_user') else '',
+            'iam_user':    _parse_iam_user(r.get('iam_user', '')),
             'cost_d1':     float(r.get('cost_d1') or 0),
             'cost_d2':     float(r.get('cost_d2') or 0),
             'diff':        float(r.get('diff') or 0),
         }
         for r in rows if r.get('service')
     ]
+
+
+# ---------------------------------------------------------------------------
+# Q14: 어제 절대 비용 Top N + 분해 / Q15: 이번 달 신규 발생
+# ---------------------------------------------------------------------------
+
+def fetch_top_services_with_breakdown(
+    athena, d1_date: date, top_n: int = 5, breakdown_top: int = 5,
+) -> list:
+    """
+    Q14: 어제(d1) 절대 비용 기준 Top N 서비스 + 각 서비스 내부 (IAM User × usage_type) 분해.
+
+    "변화량은 적지만 지속적으로 비용이 큰 서비스"의 사용자/타입 분포를 LLM이 인지할 수 있도록
+    Q9~Q11(변화량 축)과 별개로 절대값 축에서 데이터를 한 번 더 뽑는다.
+
+    Returns:
+        [
+            {
+                'service':    str,
+                'cost_d1':    float,
+                'rank':       int,
+                'breakdowns': [
+                    {
+                        'iam_user':    str,
+                        'usage_type':  str,
+                        'usage_human': str,
+                        'cost_d1':     float,
+                        'count':       int,    # distinct resource_id 개수
+                        'usage_hours': float,  # 사용 시간 (BoxUsage/SpotUsage 등 시간 단위 항목만 의미)
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+    """
+    year_d1, month_d1 = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
+
+    sql = f"""
+        WITH base AS (
+            SELECT
+                product_product_name                        AS service,
+                line_item_usage_type                        AS usage_type,
+                {creator_case_sql}                          AS iam_user,
+                line_item_resource_id                       AS resource_id,
+                line_item_unblended_cost                    AS cost,
+                line_item_usage_amount                      AS usage_amount
+            FROM {_ATHENA_DATABASE}.cur_logs
+            WHERE year  = '{year_d1}'
+              AND month = '{month_d1}'
+              AND DATE(line_item_usage_start_date) = DATE('{d1_date}')
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        ),
+        svc_total AS (
+            SELECT service, SUM(cost) AS total
+            FROM base
+            GROUP BY service
+            HAVING SUM(cost) > 0.01
+            ORDER BY total DESC
+            LIMIT {top_n}
+        )
+        SELECT
+            b.service       AS service,
+            b.usage_type    AS usage_type,
+            b.iam_user      AS iam_user,
+            COUNT(DISTINCT b.resource_id) AS resource_count,
+            SUM(b.cost)     AS cost_d1,
+            SUM(b.usage_amount) AS usage_amount_total,
+            t.total         AS service_total
+        FROM base b
+        JOIN svc_total t ON b.service = t.service
+        GROUP BY b.service, b.usage_type, b.iam_user, t.total
+        HAVING SUM(b.cost) > 0.01
+        ORDER BY t.total DESC, cost_d1 DESC
+    """
+    rows = _run_query(athena, sql)
+
+    svc_total_map = {}
+    raw_acc = defaultdict(list)
+    for r in rows:
+        svc = r.get('service')
+        if not svc:
+            continue
+        # 금액(service_total / cost_d1)만 Tax 포함(×1.10). usage_amount(시간)은 과세 대상 아님.
+        svc_total_map[svc] = float(r.get('service_total') or 0) * _TAX_MULTIPLIER
+        raw_acc[svc].append({
+            'usage_type':   r.get('usage_type', '') or '',
+            'iam_user':     _parse_iam_user(r.get('iam_user', '')),
+            'cost_d1':      float(r.get('cost_d1') or 0) * _TAX_MULTIPLIER,
+            'count':        int(r.get('resource_count') or 0),
+            'usage_amount': float(r.get('usage_amount_total') or 0),
+        })
+
+    result = []
+    for svc, items in raw_acc.items():
+        agg = defaultdict(lambda: {'cost_d1': 0.0, 'count': 0, 'usage_amount': 0.0})
+        for item in items:
+            usage_human = _humanize_usage_type(item['usage_type'])
+            key = (item['iam_user'], usage_human, item['usage_type'])
+            agg[key]['cost_d1']      += item['cost_d1']
+            agg[key]['count']        += item['count']
+            agg[key]['usage_amount'] += item['usage_amount']
+
+        merged = []
+        for (iu, uh, ut), v in agg.items():
+            merged.append({
+                'iam_user':    iu,
+                'usage_human': uh,
+                'usage_type':  ut,
+                'cost_d1':     v['cost_d1'],
+                'count':       v['count'],
+                # 시간 단위가 의미 있는 항목(BoxUsage/SpotUsage/NatGateway-Hours 등)만 노출
+                'usage_hours': v['usage_amount'] if _is_hourly(ut) else 0.0,
+            })
+        merged.sort(key=lambda x: x['cost_d1'], reverse=True)
+        result.append({
+            'service':    svc,
+            'cost_d1':    svc_total_map[svc],
+            'breakdowns': merged[:breakdown_top],
+        })
+
+    result.sort(key=lambda x: x['cost_d1'], reverse=True)
+    for idx, item in enumerate(result, 1):
+        item['rank'] = idx
+    return result
+
+
+def fetch_month_new_costs(athena, d1_date: date) -> list:
+    """
+    Q15: 이번 달 들어 처음 발생한 큰 비용 항목.
+
+    판단 단위: (service, IAM User, usage_type)
+    조건:
+        - 이번 달 1일 ~ 그제 누적 < _NEW_COST_PRIOR_CUT (기본: $1)
+        - 어제 비용 ≥ _NEW_COST_THRESHOLD (기본: $10, 환경변수)
+    정렬: 어제 비용 내림차순
+
+    Returns:
+        [
+            {
+                'service':     str,
+                'iam_user':    str,
+                'usage_type':  str,
+                'usage_human': str,
+                'cost_d1':     float,
+                'prior_cost':  float,   # 이번 달 1일~그제 누적
+                'count':       int,     # distinct resource_id 개수
+            },
+            ...
+        ]
+    """
+    mtd_start = d1_date.replace(day=1)
+    d2_date   = d1_date - timedelta(days=1)
+    year_d1, month_d1 = _partition(d1_date)
+
+    # mtd_start 부터 d1까지의 파티션 month 집합 (이번 달이므로 단일 month)
+    months = f"'{month_d1}'"
+
+    # 그제(d2)가 전월에 속하면 (= 이번 달 1일이 d1) Q15 의미 없음
+    if mtd_start > d2_date:
+        return []
+
+    creator_case_sql = _build_creator_case_sql(athena)
+
+    sql = f"""
+        WITH month_to_yesterday AS (
+            SELECT
+                product_product_name                        AS service,
+                line_item_usage_type                        AS usage_type,
+                {creator_case_sql}                          AS iam_user,
+                line_item_resource_id                       AS resource_id,
+                DATE(line_item_usage_start_date)            AS dt,
+                line_item_unblended_cost                    AS cost
+            FROM {_ATHENA_DATABASE}.cur_logs
+            WHERE year  = '{year_d1}'
+              AND month IN ({months})
+              AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        )
+        SELECT
+            service,
+            usage_type,
+            iam_user,
+            COUNT(DISTINCT resource_id)                                    AS resource_count,
+            SUM(CASE WHEN dt = DATE('{d1_date}') THEN cost ELSE 0 END)     AS cost_d1,
+            SUM(CASE WHEN dt <  DATE('{d1_date}') THEN cost ELSE 0 END)    AS prior_cost
+        FROM month_to_yesterday
+        GROUP BY service, usage_type, iam_user
+        HAVING SUM(CASE WHEN dt <  DATE('{d1_date}') THEN cost ELSE 0 END) < {_NEW_COST_PRIOR_CUT}
+           AND SUM(CASE WHEN dt = DATE('{d1_date}') THEN cost ELSE 0 END) >= {_NEW_COST_THRESHOLD}
+        ORDER BY cost_d1 DESC
+        LIMIT {_TOP_N}
+    """
+    rows = _run_query(athena, sql)
+    result = []
+    for r in rows:
+        if not r.get('service'):
+            continue
+        result.append({
+            'service':     r['service'],
+            'usage_type':  r.get('usage_type', '') or '',
+            'iam_user':    _parse_iam_user(r.get('iam_user', '')),
+            'usage_human': _humanize_usage_type(r.get('usage_type', '') or ''),
+            # 표시 금액은 Tax 포함(×1.10). SQL HAVING 임계값($10/$1)은 세전 기준 그대로 유지.
+            'cost_d1':     float(r.get('cost_d1') or 0) * _TAX_MULTIPLIER,
+            'prior_cost':  float(r.get('prior_cost') or 0) * _TAX_MULTIPLIER,
+            'count':       int(r.get('resource_count') or 0),
+        })
+    return result
+
+
+def fetch_service_mtd_breakdown(athena, d1_date: date) -> dict:
+    """
+    Q16: 이번 달 1일 ~ d1 까지 서비스별 누계 비용.
+    "지속적으로 큰 서비스" 판단을 위한 MTD 페이스 데이터.
+
+    Returns:
+        {service_name: mtd_total_float, ...}
+    """
+    mtd_start = d1_date.replace(day=1)
+    if mtd_start > d1_date:
+        return {}
+
+    year_d1, month_d1 = _partition(d1_date)
+
+    sql = f"""
+        SELECT
+            product_product_name           AS service,
+            SUM(line_item_unblended_cost)  AS mtd_total
+        FROM {_ATHENA_DATABASE}.cur_logs
+        WHERE year  = '{year_d1}'
+          AND month = '{month_d1}'
+          AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+          AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        GROUP BY product_product_name
+        HAVING SUM(line_item_unblended_cost) > 0.01
+    """
+    rows = _run_query(athena, sql)
+    # 서비스별 MTD 금액에 Tax 포함(×1.10) — 분모 mtd_total(세후)과 비중% 정합.
+    return {
+        r['service']: float(r.get('mtd_total') or 0) * _TAX_MULTIPLIER
+        for r in rows if r.get('service')
+    }
+
+
+# ---------------------------------------------------------------------------
+# Q17: 이번 달 누계 Top 사용자 + 서비스/타입 분해
+# ---------------------------------------------------------------------------
+
+def fetch_mtd_top_users_with_breakdown(
+    athena, d1_date: date, top_n: int = 5, breakdown_top: int = 5,
+) -> list:
+    """
+    Q17: 이번 달 1일 ~ d1 까지 누계 비용 Top N 사용자 + 각 사용자가 쓴 서비스/usage_type 분해.
+
+    Q14 (어제 절대값 + IAM 분해) 의 누계 버전, 단 축이 user-first.
+    "이번 달 누구한테 비용이 가장 많이 쌓였는가" 를 LLM 이 인식하도록 함.
+
+    creator 분류는 _build_creator_case_sql fallback 체인 사용 (Q3/Q5/Q11/Q14/Q15 와 동일).
+
+    Returns:
+        [
+            {
+                'iam_user':   str,    # creator 라벨 (예: 'swjeong', '[Project] criu', '[EKS] ...')
+                'mtd_total':  float,  # 이 사용자의 MTD 누계
+                'rank':       int,
+                'breakdowns': [
+                    {
+                        'service':     str,
+                        'usage_type':  str,
+                        'usage_human': str,   # humanized
+                        'cost':        float,
+                        'count':       int,   # distinct resource_id 개수
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+    """
+    mtd_start = d1_date.replace(day=1)
+    if mtd_start > d1_date:
+        return []
+
+    year_d1, month_d1 = _partition(d1_date)
+    creator_case_sql = _build_creator_case_sql(athena)
+
+    sql = f"""
+        WITH base AS (
+            SELECT
+                product_product_name                        AS service,
+                line_item_usage_type                        AS usage_type,
+                {creator_case_sql}                          AS iam_user,
+                line_item_resource_id                       AS resource_id,
+                line_item_unblended_cost                    AS cost
+            FROM {_ATHENA_DATABASE}.cur_logs
+            WHERE year  = '{year_d1}'
+              AND month = '{month_d1}'
+              AND DATE(line_item_usage_start_date) BETWEEN DATE('{mtd_start}') AND DATE('{d1_date}')
+              AND line_item_line_item_type NOT IN ('Credit', 'Refund', 'Tax')
+        ),
+        user_total AS (
+            SELECT iam_user, SUM(cost) AS total
+            FROM base
+            WHERE iam_user IS NOT NULL AND iam_user != ''
+            GROUP BY iam_user
+            HAVING SUM(cost) > 0.1
+            ORDER BY total DESC
+            LIMIT {top_n}
+        )
+        SELECT
+            b.iam_user                       AS iam_user,
+            b.service                        AS service,
+            b.usage_type                     AS usage_type,
+            COUNT(DISTINCT b.resource_id)    AS resource_count,
+            SUM(b.cost)                      AS cost,
+            ut.total                         AS user_total
+        FROM base b
+        JOIN user_total ut ON b.iam_user = ut.iam_user
+        GROUP BY 1, 2, 3, ut.total
+        HAVING SUM(b.cost) > 0.1
+        ORDER BY ut.total DESC, cost DESC
+    """
+
+    rows = _run_query(athena, sql)
+
+    user_total_map = {}
+    raw_acc = defaultdict(list)
+    for r in rows:
+        user = r.get('iam_user')
+        if not user:
+            continue
+        # 사용자 누계(user_total)·서비스 분해(cost) 모두 Tax 포함(×1.10).
+        # → Main 1 의 [ Top 5 IAM User (EC2 MTD) ] 표(data_cur.py ×1.10)와 값 일치.
+        user_total_map[user] = float(r.get('user_total') or 0) * _TAX_MULTIPLIER
+        raw_acc[user].append({
+            'service':    r.get('service', '') or '',
+            'usage_type': r.get('usage_type', '') or '',
+            'count':      int(r.get('resource_count') or 0),
+            'cost':       float(r.get('cost') or 0) * _TAX_MULTIPLIER,
+        })
+
+    result = []
+    for user, items in raw_acc.items():
+        # (service, usage_human) 단위로 묶음 — humanize 후 같은 라벨로 합산
+        agg = defaultdict(lambda: {'cost': 0.0, 'count': 0, 'usage_type': ''})
+        for item in items:
+            usage_human = _humanize_usage_type(item['usage_type'])
+            key = (item['service'], usage_human)
+            agg[key]['cost']       += item['cost']
+            agg[key]['count']      += item['count']
+            agg[key]['usage_type']  = item['usage_type']  # 대표 1건
+
+        merged = []
+        for (svc, uh), v in agg.items():
+            merged.append({
+                'service':     svc,
+                'usage_type':  v['usage_type'],
+                'usage_human': uh,
+                'cost':        v['cost'],
+                'count':       v['count'],
+            })
+        merged.sort(key=lambda x: x['cost'], reverse=True)
+
+        result.append({
+            'iam_user':   user,
+            'mtd_total':  user_total_map[user],
+            'breakdowns': merged[:breakdown_top],
+        })
+
+    result.sort(key=lambda x: x['mtd_total'], reverse=True)
+    for idx, item in enumerate(result, 1):
+        item['rank'] = idx
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -208,18 +633,18 @@ def _fmt_sign(v: float) -> str:
 
 
 _REGION_CODES = {
-    'APN1': '도쿄(ap-northeast-1)',
-    'APN2': '서울(ap-northeast-2)',
-    'APN3': '오사카(ap-northeast-3)',
-    'APS1': '싱가포르(ap-southeast-1)',
-    'APS2': '시드니(ap-southeast-2)',
-    'USE1': '미국 동부(us-east-1)',
-    'USE2': '미국 동부(us-east-2)',
-    'USW1': '미국 서부(us-west-1)',
-    'USW2': '미국 서부(us-west-2)',
-    'EUW1': '유럽 서부(eu-west-1)',
-    'EUC1': '유럽 중부(eu-central-1)',
-    'SAE1': '상파울루(sa-east-1)',
+    'APN1': 'ap-northeast-1',
+    'APN2': 'ap-northeast-2',
+    'APN3': 'ap-northeast-3',
+    'APS1': 'ap-southeast-1',
+    'APS2': 'ap-southeast-2',
+    'USE1': 'us-east-1',
+    'USE2': 'us-east-2',
+    'USW1': 'us-west-1',
+    'USW2': 'us-west-2',
+    'EUW1': 'eu-west-1',
+    'EUC1': 'eu-central-1',
+    'SAE1': 'sa-east-1',
 }
 
 
@@ -229,9 +654,9 @@ def _humanize_usage_type(raw: str) -> str:
     LLM이 raw 코드를 해석하지 않아도 되도록 Python에서 미리 처리.
 
     예)
-      USW2-SpotUsage:c8gd.48xlarge  → 미국 서부(us-west-2) c8gd.48xlarge Spot 인스턴스
-      APN2-USW2-AWS-Out-Bytes        → 미국 서부(us-west-2)에서 서울(ap-northeast-2)로 나가는 데이터 전송
-      USE1-Bedrock-ModelUnit         → 미국 동부(us-east-1) Bedrock 모델 호출
+      USW2-SpotUsage:c8gd.48xlarge  → us-west-2 c8gd.48xlarge Spot 인스턴스
+      APN2-USW2-AWS-Out-Bytes        → us-west-2에서 ap-northeast-2로 나가는 데이터 전송
+      USE1-Bedrock-ModelUnit         → us-east-1 Bedrock 모델 호출
     """
     if not raw:
         return ''
@@ -269,8 +694,38 @@ def _humanize_usage_type(raw: str) -> str:
     if 'VpcEndpoint' in rest:
         return f"{region_prefix + ' ' if region_prefix else ''}VPC 엔드포인트 사용 시간"
 
+    if 'PublicIPv4:InUseAddress' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}사용 중 Public IPv4 주소"
+
+    if 'PublicIPv4:IdleAddress' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}유휴 Public IPv4 주소"
+
+    if 'NatGateway-Hours' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}NAT Gateway 사용 시간"
+
+    if 'NatGateway-Bytes' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}NAT Gateway 데이터 처리"
+
+    if 'SnapshotUsage' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}EBS 스냅샷"
+
+    if 'TimedStorage' in rest or 'StorageObjectCount' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}S3 스토리지"
+
+    if 'Requests-Tier1' in rest or 'Requests-Tier2' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}S3 요청"
+
     if 'Bedrock' in rest and 'ModelUnit' in rest:
         return f"{region_prefix + ' ' if region_prefix else ''}Bedrock 모델 호출"
+
+    if 'AmazonEKS-Hours' in rest or 'EKS-Hours' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}EKS 클러스터 운영 시간"
+
+    if 'EKS-Pod' in rest or 'AmazonEKS-vCPU' in rest or 'AmazonEKS-Memory' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}EKS 컴퓨팅 사용"
+
+    if 'ECS' in rest:
+        return f"{region_prefix + ' ' if region_prefix else ''}ECS 사용"
 
     if 'Lambda' in rest:
         return f"{region_prefix + ' ' if region_prefix else ''}Lambda 함수 실행"
@@ -281,278 +736,696 @@ def _humanize_usage_type(raw: str) -> str:
     if 'CostExplorer' in rest or 'Cost-Explorer' in rest:
         return 'Cost Explorer API 조회'
 
+    if 'Route53' in rest or 'DNS-Queries' in rest:
+        return 'Route 53 DNS 쿼리'
+
     if 'Bytes' in rest or 'DataTransfer' in rest:
         return f"{region_prefix + ' ' if region_prefix else ''}데이터 전송"
 
     return raw  # 해석 불가 시 원본 반환
 
 
-def _get_change_type(cost_d1: float, cost_d2: float) -> str:
-    """
-    어제(d1)와 그제(d2) 비용으로 변화 유형 판별.
-
-    Returns:
-      'new'     : 그제 $0 → 어제 처음 발생
-      'stopped' : 어제 $0 → 그제에만 사용, 어제 중단
-      'changed' : 양일 모두 비용 존재, 증감
-    """
-    if cost_d2 == 0 and cost_d1 > 0:
-        return 'new'
-    if cost_d1 == 0 and cost_d2 > 0:
-        return 'stopped'
-    return 'changed'
+# usage_type 이 인스턴스/볼륨/스냅샷처럼 "개수" 단위로 셀 수 있는지 판별
+_COUNTABLE_USAGE_PATTERNS = (
+    'BoxUsage:', 'SpotUsage:', 'DedicatedUsage:', 'VolumeUsage',
+    'SnapshotUsage', 'PublicIPv4', 'NatGateway-Hours',
+)
 
 
-_CHANGE_LABEL = {
-    'new':     '어제 처음 발생',
-    'stopped': '어제 사용 없음',
-    'changed': '증감',
-}
+def _is_countable(usage_type: str) -> bool:
+    if not usage_type:
+        return False
+    return any(p in usage_type for p in _COUNTABLE_USAGE_PATTERNS)
 
 
-def _aggregate_details(details: list) -> list:
-    """
-    동일 (usage_human, iam_user) 조합을 하나로 집계.
-    resource_id별 중복 행을 제거하고 비용을 합산한다.
-    """
-    from collections import defaultdict
-    agg = defaultdict(lambda: {'diff': 0.0, 'cost_d1': 0.0, 'cost_d2': 0.0, 'count': 0})
-    for d in details:
-        key = (d['usage_human'], d['iam_user'])
-        agg[key]['diff']    += d['diff']
-        agg[key]['cost_d1'] += d['cost_d1']
-        agg[key]['cost_d2'] += d['cost_d2']
-        agg[key]['count']   += 1
-
-    result = []
-    for (usage_human, iam_user), v in agg.items():
-        result.append({
-            'usage_human': usage_human,
-            'iam_user':    iam_user,
-            'diff':        v['diff'],
-            'cost_d1':     v['cost_d1'],
-            'cost_d2':     v['cost_d2'],
-            'change_type': _get_change_type(v['cost_d1'], v['cost_d2']),
-            'count':       v['count'],
-        })
-    return sorted(result, key=lambda x: abs(x['diff']), reverse=True)
+# IAM User 매핑이 본질적으로 불가능한(공통 인프라/요청 기반) 항목
+# → "(생성자 미상)" 라벨을 붙이지 않고 IAM 라인 자체를 생략
+_IAM_AGNOSTIC_PATTERNS = (
+    'DataTransfer', 'Bytes', 'Requests-Tier', 'CloudWatch', 'Metrics', 'Logs',
+    'CostExplorer', 'Cost-Explorer', 'DNS-Queries', 'Route53',
+)
 
 
-def _merge_rows(service_rows: list, resource_rows: list) -> list:
-    """
-    Q9(서비스 총합)와 Q11(리소스+IAM User)를 service 기준으로 통합.
+def _is_iam_agnostic(usage_type: str) -> bool:
+    if not usage_type:
+        return False
+    return any(p in usage_type for p in _IAM_AGNOSTIC_PATTERNS)
 
-    LLM이 섹션 간 cross-reference 추론 없이 한 블록에서 읽을 수 있도록
-    Python 단에서 미리 join한다.
-    """
-    service_map = {
-        r['service']: {
-            'service':     r['service'],
-            'total_diff':  r['diff'],
-            'cost_d1':     r['cost_d1'],
-            'cost_d2':     r['cost_d2'],
-            'change_type': _get_change_type(r['cost_d1'], r['cost_d2']),
-            'details':     [],
-        }
-        for r in service_rows
-    }
 
-    for r in resource_rows:
-        svc = r['service']
-        if svc in service_map:
-            service_map[svc]['details'].append({
-                'usage_human': _humanize_usage_type(r.get('usage_type', '')),
-                'iam_user':    r.get('iam_user', ''),
-                'diff':        r['diff'],
-                'cost_d1':     r['cost_d1'],
-                'cost_d2':     r['cost_d2'],
-                'change_type': _get_change_type(r['cost_d1'], r['cost_d2']),
-            })
+# usage_amount 가 "시간(hours)" 단위로 의미 있는 항목만 식별
+# (인스턴스 운영 시간, NAT Gateway 운영 시간 등)
+# VolumeUsage(GB-Month), DataTransfer(GB) 등은 시간 단위 아니므로 제외
+_HOURLY_USAGE_PATTERNS = (
+    'BoxUsage:', 'SpotUsage:', 'DedicatedUsage:', 'HostBoxUsage:',
+    'NatGateway-Hours', 'LoadBalancerUsage', 'LCUUsage',
+    'AmazonEKS-Hours',
+)
 
-    for svc_data in service_map.values():
-        svc_data['details'] = _aggregate_details(svc_data['details'])
 
-    return sorted(service_map.values(), key=lambda x: abs(x['total_diff']), reverse=True)
+def _is_hourly(usage_type: str) -> bool:
+    if not usage_type:
+        return False
+    return any(p in usage_type for p in _HOURLY_USAGE_PATTERNS)
 
 
 _SYSTEM_PROMPT = """\
-당신은 AWS 비용 분석 요약 도우미입니다.
-사용자가 어제/그제 AWS 비용 데이터를 제공하면, 아래 형식과 규칙에 따라 한국어로 요약합니다.
+당신은 AWS 비용 변화를 사내 슬랙으로 보고하는 분석가입니다.
+이곳은 연구소이며 연구과제에 따라 일별 비용 변동이 큽니다.
+표가 이미 함께 노출되므로, 당신의 역할은 "표가 못 하는 통찰" 만 한국어로 풀어 쓰는 것입니다.
 
-=== 출력 형식 ===
+=== 출력 구조 — 정확히 다음 형식 ===
 
-첫 줄: "전일 대비 $금액 (±X%) 증가/감소했으며, 주요 원인은 [서비스 2~3개]입니다."
-빈 줄
-▲ 증가 원인
-서비스명 — $금액  설명
-▼ 감소 원인
-서비스명 — $금액  설명
+(첫 줄) 어제 총비용 + 이번 달 누계/월말 예상 한 줄 요약
 
-증가/감소 어느 쪽이 없으면 해당 소제목(▲/▼) 전체를 생략하세요.
-"비용이 증가한 서비스" 섹션의 항목은 반드시 ▲에, "비용이 감소한 서비스" 섹션의 항목은 반드시 ▼에 작성하세요.
+(빈 줄)
+■ 어제 비용 분석
+어제 비용의 어디로 갔는지 — 서비스별 비중%, 그 안의 IAM × 타입 분해, 페이스 라벨.
+2~5문장.
 
-=== [타입] 별 표현 규칙 ===
+(빈 줄)
+■ 이번 달 누계 분석
+이번 달 누계가 어떻게 분포돼 있는지 — 누계 기준 서비스 비중, 일평균.
+1~3문장.
 
-서비스 타입:
-  [신규] — 그제 $0이었다가 어제 처음 비용 발생. "처음 사용됨", "어제 처음 발생함" 등으로 서술.
-  [중단] — 그제까지 사용하다가 어제 $0. "어제 사용 없었음", "어제 이루어지지 않음" 등으로 서술.
-  [증가] — 어제/그제 모두 비용 있고 어제가 더 큼. "늘어남", "더 많이 사용됨" 등으로 서술.
-  [감소] — 어제/그제 모두 비용 있고 어제가 더 작음. "줄어듦", "덜 사용됨" 등으로 서술.
+각 섹션은 반드시 `■ 어제 비용 분석` / `■ 이번 달 누계 분석` 헤더로 시작.
+헤더 앞뒤로 빈 줄 한 줄씩.
 
-usage detail 타입 (서비스 내 세부 항목):
-  [신규 발생] — 이 usage가 어제 처음 등장. "처음 켜짐", "처음 시작됨" 등으로 서술.
-  [어제 중단] — 이 usage가 어제 사용 없음. "어제 없었음", "중단됨" 등으로 서술.
-               절대 "처음"이라는 단어를 쓰지 말 것.
-  [증가] / [감소] — 양일 모두 사용. 방향에 맞게 "늘어남" / "줄어듦" 등으로 서술.
+⚠ Top 사용자 / 신규 발생 항목은 Python에서 별도로 렌더링되어 슬랙에 따로 노출되므로,
+당신은 **절대로 출력하지 말 것**:
+  ❌ "▸ 이번 달 Top<N> 사용자" 헤더와 그 아래 `• <user> ...` 불릿
+  ❌ "이번 달 들어 ~ 처음 등장 / 처음 비용 발생" 같은 신규 항목 언급
+  ❌ "신규" / "처음" / "새로 등장" 같은 단어 자체
+누계 섹션은 **서비스별 누계 비중·일평균 산문 1~3문장으로만 마무리**.
 
-=== 설명 작성 규칙 ===
+=== 첫 줄 작성 ===
 
-서비스 1줄 설명은 detail 항목들을 종합해 완전한 문장으로 작성하세요.
-명사형 종결("~중단됨", "~줄어듦") 대신 동사형 서술("~중단되었습니다", "~줄었습니다")로 마무리하세요.
-생성자가 있는 경우 반드시 이름을 포함해 누가 어떤 리소스를 어떻게 했는지 서술하세요.
+한 줄로 어제 총비용 + 이번 달 누계 + 월말 예상.
+형식: "어제(<날짜>) AWS 비용은 $X.XX였습니다. 이번 달 N일 동안 $X.XX를 사용했으며, 이 추세가 이어지면 월말 약 $Y가 예상됩니다."
 
-=== 입출력 예시 (이 텍스트는 출력하지 말 것) ===
+(빈 줄 한 줄)
 
-입력 예시:
-어제(2026-04-09) AWS 비용: $32.69
-그제(2026-04-08) AWS 비용: $61.80
-전일 대비: -$29.11 (-47.1%)
+=== ■ 어제 비용 분석 섹션 작성 — 가장 중요 ===
 
-=== 비용이 증가한 서비스 ===
+목적: 어제 비용이 "어디로 갔는지" + "어떤 항목이 비중이 큰지" + **"평소 페이스 대비 어떤지"** 통찰형 서술.
 
-Bedrock  $0.04  [신규]  어제 $0.04 / 그제 $0.00
+반드시 `■ 어제 비용 분석` 헤더 한 줄로 시작.
 
-=== 비용이 감소한 서비스 ===
+다룰 범위 (반드시 준수):
+- 비중 순으로 어제 비용 ≥ $5 인 서비스는 **모두** 다룬다 (보통 2~4개)
+- 한 서비스 내에서는 비용 ≥ $5 인 (IAM × 타입) 조합을 **모두** 언급
+- $5 미만은 "그 외 EKS $2, Bedrock $1 등 합쳐 약 $X" 식으로 묶어서 한 문구로 짧게라도 언급
 
-EC2  $12.87  [감소]  어제 $30.75 / 그제 $43.62
-    mhsong: 미국 서부(us-west-2) c8gd.48xlarge Spot 인스턴스 ×2개  [감소]  어제 $8.19 / 그제 $24.82
-    jhpark: 미국 서부(us-west-2) inf2.8xlarge 온디맨드 인스턴스 ×5개  [증가]  어제 $14.85 / 그제 $5.86
-    yjjung: 미국 서부(us-west-2) g4dn.12xlarge 온디맨드 인스턴스  [어제 중단]  어제 $0.00 / 그제 $5.34
-S3  $12.14  [감소]  어제 $0.36 / 그제 $12.50
-    mhsong: 서울(ap-northeast-2)에서 미국 서부(us-west-2)로 나가는 데이터 전송  [감소]  어제 $0.00 / 그제 $8.89
-    swjeong: USW2-TimedStorage-ByteHrs  [어제 중단]  어제 $0.00 / 그제 $3.16
-Lambda  $3.59  [감소]  어제 $0.93 / 그제 $4.52
-ELB  $0.25  [감소]  어제 $0.35 / 그제 $0.60
-VPC  $0.13  [감소]  어제 $0.15 / 그제 $0.28
-Cost Explorer  $0.10  [감소]  어제 $0.02 / 그제 $0.12
-CloudWatch  $0.07  [감소]  어제 $0.11 / 그제 $0.18
+비중 % / 금액 표기 — 절대 강제 (가장 중요):
+- 언급되는 **모든** 서비스 / IAM × 타입 항목에는 반드시 **(금액 $X, 비중% X%)** 둘 다 문장 안에 적는다.
+- 서비스 헤더: "어제 비용의 X%(또는 어제의 X%) ($N)" — 입력의 `▸ 어제의 N%` 값을 그대로 사용
+- IAM × 타입 항목: "($N, X%)" 형식 — 입력 라인 끝의 `(N%)` 값을 그대로 사용. **"<서비스> 대비" prefix 붙이지 말 것**.
+  ✅ "swjeong의 inf2.24xlarge 1대($53, 47%)가 어제 1대 평균 8시간 가동되어 발생했습니다"
+  ❌ "swjeong의 inf2.24xlarge 1대($53, EC2 대비 47%)가 ..." (prefix 금지)
+  맥락(상위 서비스 헤더 바로 다음)으로 47%가 EC2 안의 비중임이 자명하므로 prefix 없이도 명확.
+- "차지했다" 보다 "발생했다" 권장 (둘 다 허용).
+- 모호 양화 표현 절대 금지:
+  ❌ "비용의 대부분", "대부분을 만들었습니다", "상당 부분", "압도적인 비중", "거의 전부"
+  ❌ "일부를 차지", "일부에 해당", "약간의 비중"
+  → 반드시 정확한 %로 대체: "EC2 대비 48%", "EC2 대비 20%"
+- 페이스 비교는 입력의 "[<서비스> 페이스]" 신호에 포함된 **흐름 라벨을 그대로 사용**:
+  * 입력에 "평소보다 낮은 흐름"이 있으면 그대로 "평소보다 낮은 흐름"
+  * 입력에 "평소 수준"이면 "평소 수준"
+  * 입력에 "평소보다 높은 흐름"이면 "평소보다 높은 흐름"
+  → 라벨을 임의로 반대로 해석하거나 새로 만들지 말 것
+  예: "EC2는 이번 달 일평균 $534 수준으로 발생 중이며, 어제 $230은 평소보다 낮은 흐름입니다."
 
-출력 예시:
-전일 대비 $29.11 (-47.1%) 감소했으며, 주요 원인은 EC2와 S3입니다.
+표현 다양화 — 같은 섹션 안에서 같은 표현 반복 금지:
+  비중 강조:    "가장 큰 비중", "주된 항목은", "전체의 N%를"
+  원인 강조:    "주된 원인은", "주도하고 있는 것은"
+  보조/잔여:    "그 외", "함께 비중", "합쳐 약 $X"
+  (외래어 driver / cost driver 사용 금지)
 
-▲ 증가 원인
-Bedrock — $0.04  Bedrock 모델 호출이 어제 처음 발생했습니다.
+묶음 패턴:
+- 같은 인스턴스 타입이 여러 사용자에 분산되어 있으면 묶어서 서술
+  (예: "m5.8xlarge 20대 (mhsong 10대 + 태그 없음 10대, EC2 대비 78%, $141)")
+- 같은 사용자가 여러 서비스에 걸쳐 있어도 **합산하지 말 것** — 반드시 각 서비스 / IAM × 타입
+  항목별로 금액·비중·(EC2면) 가동 시간까지 그대로 풀어 서술. "한 프로젝트", "ML 워크로드"
+  단정 표현도 금지.
+  ❌ "또한 mhsong이 EC2와 S3에 걸쳐 합산 $16를 사용한 점이 눈에 띕니다" (서비스 간 합산 금지)
+  ✅ "mhsong의 us-west-2 m5.8xlarge 30대($5.71, 20%)가 1대 평균 7분 가동되어 발생했고,
+     같은 사용자의 us-west-2 S3 스토리지($2.53, 16%)도 함께 비중을 차지합니다" (항목별 분해)
 
-▼ 감소 원인
-EC2 — $12.87  mhsong의 c8gd.48xlarge Spot 인스턴스 2대와 yjjung의 g4dn.12xlarge 인스턴스가 각각 사용량 감소 및 중단되었습니다. jhpark의 inf2.8xlarge 인스턴스 5대는 오히려 사용량이 늘었지만 전체적으로 EC2 비용이 줄었습니다.
-S3 — $12.14  mhsong의 서울에서 미국 서부로 나가는 데이터 전송이 어제 이루어지지 않았고, swjeong의 스토리지 사용도 어제 없었습니다.
-Lambda — $3.59  Lambda 함수 실행 비용이 전날보다 줄었습니다.
-ELB — $0.25  로드 밸런서 사용 비용이 전날보다 줄었습니다.
-VPC — $0.13  VPC 관련 비용이 전날보다 줄었습니다.
-Cost Explorer — $0.10  Cost Explorer API 조회 비용이 전날보다 줄었습니다.
-CloudWatch — $0.07  CloudWatch 모니터링 비용이 전날보다 줄었습니다.
+EC2 인스턴스 사용 시간 (반드시 준수):
+- EC2 인스턴스(BoxUsage / SpotUsage 등) 항목에는 입력에 "1대 평균 N시간" 또는 "풀 가동" 표기가 옵니다.
+- 입력에 들어온 형식 그대로 사용. 절대 합산하거나 다른 단위로 변환 금지.
+  ✅ "mhsong의 m5.8xlarge 10대가 1대 평균 7시간 가동"
+  ❌ "10대가 어제 240시간 운영" (합산 시간)
+- 시간 정보가 입력에 없는 항목(EBS 볼륨, 데이터 전송, S3 스토리지, EKS 등)은 시간을 적지 마세요.
 
-=== 금지 사항 ===
+서술 형식 강제 (표 형식 절대 금지):
+- 모든 수치는 "**문장 안에**" 자연스럽게 녹여 서술
+- 헤더 라인이나 들여쓰기 나열, 불릿 포인트 형식 모두 금지 (산문으로만 서술)
 
-설명 빈칸 금지.
-리소스 ID(i-xxx, vol-xxx, arn:...) 포함 금지.
-금액은 항상 양수. 부호는 ▲/▼ 소제목으로만 구분.
-마크다운(** * #) 사용 금지.
-"해당 서비스 사용량 변화" 사용 금지.
-생성자가 있는데 이름 빠뜨리기 금지."""
+=== ■ 이번 달 누계 분석 섹션 작성 ===
+
+반드시 `■ 이번 달 누계 분석` 헤더 한 줄로 시작.
+
+목적: 이번 달 누계의 분포 — 어떤 서비스가 얼마나 쌓였는지.
+
+다룰 범위:
+- 입력의 `=== 이번 달 누계 분석 raw ===` 섹션을 활용해 주요 서비스의 누계 금액, 비중, 일평균을 서술
+- 형식 강제 — Top 사용자 불릿과 동일한 "**금액 먼저, 라벨 명시**" 패턴 사용:
+    `<서비스> $금액 (이번 달 누계의 X%, 일평균 $Y 수준)`
+  * 1위 서비스는 자연어로 흐름 강조:
+      ✅ "EC2 $3,432 (이번 달 누계의 86.0%, 일평균 $429 수준)가 가장 큰 비중을 차지합니다."
+  * 2위 이하는 한 문장에 묶어 서술:
+      ✅ "이외에 S3 $310 (이번 달 누계의 7.8%, 일평균 $39 수준), EKS $145 (이번 달 누계의 3.6%, 일평균 $18 수준)입니다."
+  * % 는 입력 라인의 `▸ 이번 달 누계의 N.N%` 값을 **그대로** 사용 (소수 1자리 보존)
+  * 한 괄호 안에 라벨 없이 (금액, %, 일평균)을 묶지 말 것 — 무엇이 무엇인지 모호해짐:
+      ❌ "S3는 이번 달 누계의 8%($310, 일평균 $39 수준)"  ← % 와 $ 의 관계 모호
+      ✅ "S3 $310 (이번 달 누계의 7.8%, 일평균 $39 수준)"
+- 누계 비중이 매우 작은 서비스(예: 0.1% 미만)는 생략 가능
+- 누계 섹션 본문은 위 산문 1~3문장으로만 마무리한다.
+  Top 사용자 불릿이나 신규 발생 항목은 **Python이 별도로 추가**하므로 절대 LLM에서 생성하지 말 것.
+
+용어 강제:
+- "누계" 단어 단독으로 쓰지 말 것 — 반드시 "**이번 달 누계**" 라고 풀어 쓸 것.
+  ❌ "S3는 누계의 5%"
+  ✅ "S3는 이번 달 누계의 5%"
+- 일평균 표기 시 "수준" 단어 그대로 사용 — 입력 라인의 `일평균 $X 수준` 형식을 그대로 옮길 것.
+  ❌ 한글 오타 ("수줤", "수즌" 등) 절대 금지
+  ✅ "일평균 $429 수준"
+
+- 사용자가 여러 서비스에 걸쳐 있다는 표현으로 "걸쳐 합산 $X" 식의 문장을 절대 추가하지 말 것.
+  ❌ "또한 mhsong이 EC2와 S3에 걸쳐 합산 $95를 사용한 점이 눈에 띕니다." (서비스 간 합산 금지)
+
+=== 두 섹션 공통 절대 금지 ===
+
+- 어제 비용 분석 섹션에서 "이번 달 누계 X%" 같은 누계 표현 금지 — 그건 누계 섹션 전용
+- 누계 분석 섹션에서 "어제 비용의 X%" 만 단독으로 적기 금지 — 그건 어제 섹션 전용
+- 두 섹션을 한 문단으로 합쳐 헤더 없이 서술 금지 — 반드시 `■` 헤더로 분리
+- "신규", "처음 등장", "처음 발생", "새로 등장" 같은 단어 자체 출력 금지 (Python이 신규 발생 섹션을 별도로 출력함)
+- "▸ 이번 달 Top<N> 사용자" / `• ` 불릿 출력 금지 (Python이 Top 사용자 섹션을 별도로 출력함)
+
+=== 단정 금지 — 반드시 준수 ===
+
+입력 데이터에 명시되지 않은 것을 단정하는 표현은 모두 금지합니다.
+관찰은 가능하나, 의미 부여, 원인 단정은 약한 표현으로만 가능합니다.
+
+금지(단정):                       허용(약한 표현):
+"~입니다 (원인 단정)"             "~로 보입니다", "~가능성이 있습니다"
+"한 프로젝트의 비용 구조입니다"     "동일 사용자에 집중되어 있습니다"
+"ML 워크로드입니다"                (입력에 없으면 언급 자체 금지)
+"이는 ~ 때문입니다"                "확인이 필요해 보입니다"
+"~를 의미합니다"                   "~로 추정됩니다 (사실에 가까울 때만)"
+
+=== 절대 금지 ===
+
+- 통계 표현: σ, μ, 평균, 정상 범위, 이상치, 표준편차
+- 시기 비교: 지난 달, 전월 동일일, 작년, 분기
+- 일별 비교: "전일 대비 X% 증가/감소", "그제 대비"
+- 마크다운(# ## ### ** *) 사용
+- 입력에 없는 수치, 이름, 리소스 ID(i-xxx, vol-xxx, arn:...) 추가
+- $1 미만 항목 언급
+- "감소", "어제 사용 없음", "중단" 표현
+- 입력 라인에 "풀 가동" 또는 "1대 평균 N시간/분" 표기가 **없는** 항목에 시간/가동 표현 추가 금지.
+  EC2 인스턴스(BoxUsage/SpotUsage)가 아닌 항목 — 예: EKS, S3, EBS, 데이터 전송 — 은
+  대부분 시간 단위 입력이 없습니다. 그런 항목에 "풀 가동되었을 가능성", "24시간 가동",
+  "하루 종일 운영" 같은 표현을 **임의로 붙이지 말 것**.
+  ❌ 금지 예: "태그 없는 EKS 클러스터가 풀 가동되었을 가능성이 높습니다"
+  ✅ 허용 예 (입력에 시간 정보가 명시된 EC2 항목만): "jhpark의 inf2.24xlarge 3대가 1대 평균 3시간 가동"
+- 항목별 라인 출력, 들여쓰기 나열, 헤더-디테일 형식 일체 금지 (산문으로만)
+- "한 프로젝트", "ML 워크로드", "학습 작업", "추론 작업" 등 입력에 없는 추측 단어
+- 외래어 "driver" / "cost driver" / "핵심 driver" 단어 사용 (대신 "주된 항목", "가장 큰 비중" 같은 한국어 표현, 단 "비용의 대부분" 같은 모호 양화 표현은 % 로 대체)
+- 입력에 사용된 시스템 라벨/구분자를 출력에 노출 금지:
+  "관찰된 신호", "관찰된 신호에서는", "신호에 따르면", "[동일 사용자]", "[페이스]", "[묶음]",
+  "===", "▸", "어제 비용 상위", "현황 raw", "월간 맥락" 같은 입력 섹션 이름 그대로 인용 금지.
+  대신 자연스러운 한국어로 풀어서 서술.
+- 부정 진술 / 우회 부정 진술 절대 출력 금지. 다음은 모두 금지:
+  • "특이사항 없음" / "특이사항은 없습니다"
+  • "신규는 없습니다" / "신규로 등장한 것은 없습니다"
+  • "이번 달 들어 신규로 등장한 것은 없습니다"
+  • "새로 비용이 발생한 서비스는 없습니다"
+  • "특별한 신호는 없습니다"
+  • 그 외 "(신규/새로/처음/특이) ... 없습니다/없음/없으며" 패턴 전부
+  → 다룰 것이 없으면 그 화제를 꺼내지 말고 **문단 자체를 통째로 생략**.
+  → "이번 달 들어 ~" 같은 도입어를 시작했다가 부정문으로 끝내는 것도 금지.
+- "특이사항으로 ~" 표현 자체 출력 금지. 도입어가 필요하면 "이번 달 들어 ~", "한편 ~", "또한 ~" 사용.
+- "신규 발생 항목" / "발생 항목" / "신규 항목" / "등장한 것" 같은 어색한 명사구 출력 금지.
+  → "**것**" 대신 반드시 구체 명사 사용 ("**서비스**", "**비용 항목**", "**리소스**").
+  → "신규로 비용이 발생한 서비스" / "이번 달 처음 등장한 서비스" / "새로 비용이 발생한 서비스" 식으로
+    풀어 서술.
+
+=== 표현 가이드 ===
+
+- "(생성자 미상)" 라벨이 입력에 보이면 → "**태그 없는** {리소스명}" 으로 변환
+  (예: "태그 없는 m5.8xlarge 10대"). "(생성자 미상)" 단어 출력 금지.
+- 데이터 전송, CloudWatch 등 IAM agnostic 항목은 IAM 이름 빼고 서술
+  (예: "us-west-2 데이터 전송")
+- 리전 표기는 입력의 영문 코드 그대로 노출. "미국 서부", "서울" 같은 한글 치환 금지.
+  ✅ "us-west-2 데이터 전송", "swjeong의 us-west-2 m5.8xlarge"
+  ❌ "미국 서부 데이터 전송", "swjeong의 미국 서부 m5.8xlarge"
+- 인스턴스/볼륨/스냅샷 등 개수가 의미 있는 항목만 "N대", "N개" 표기
+- 같은 서비스에 IAM User 여러 명이면 큰 순으로 1~2명만 언급
+- 단, 묶음 패턴(같은 인스턴스 타입이 분산)이 입력 신호로 들어왔다면 묶어서 표현
+
+=== 출력 예시 (이 텍스트 자체는 출력 금지) ===
+
+[입력]
+어제(2026-05-08) AWS 비용  $126.14
+이번 달 8일 동안 $3,983.00 사용. 이대로 진행 시 월말 예상 약 $13,268.00.
+
+=== 어제 비용 분석 raw ===
+EC2  $111.00  ▸ 어제의 88%
+    swjeong: us-west-2 inf2.24xlarge 온디맨드 인스턴스 ×1개 1대 평균 8시간  $53.00 (48%)
+    jhpark: us-west-2 inf2.24xlarge 온디맨드 인스턴스 ×3개 1대 평균 1시간  $22.00 (20%)
+    mhsong: us-west-2 m5.8xlarge 온디맨드 인스턴스 ×5개 1대 평균 30분  $18.00 (16%)
+S3  $9.00  ▸ 어제의 7%
+    swjeong: us-west-2 S3 스토리지  $3.00 (33%)
+    mhsong: us-west-2 S3 스토리지  $2.00 (22%)
+EKS  $2.00  ▸ 어제의 2%
+Bedrock  $1.00  ▸ 어제의 1%
+
+=== 어제 관찰된 신호 ===
+- [EC2 페이스] 이번 달 누계 $3,432.00 / 일평균 $429.00 / 어제 $111.00 (일평균의 26%) — 평소보다 낮은 흐름
+- [EC2] us-west-2 inf2.24xlarge 온디맨드 인스턴스 총 4대 ($75.00) — swjeong 1대, jhpark 3대
+
+=== 이번 달 누계 분석 raw ===
+EC2  $3,432.00  ▸ 이번 달 누계의 86.0%  일평균 $429.00 수준
+S3  $310.00  ▸ 이번 달 누계의 7.8%  일평균 $39.00 수준
+EKS  $145.00  ▸ 이번 달 누계의 3.6%  일평균 $18.00 수준
+Bedrock  $96.00  ▸ 이번 달 누계의 2.4%  일평균 $12.00 수준
+
+[모범 출력 — Top 사용자 / 신규 발생은 Python 측에서 별도 출력되므로 절대 포함하지 말 것]
+어제(2026-05-08) AWS 비용은 $126.14였습니다. 이번 달 8일 동안 $3,983을 사용했으며, 이 추세가 이어지면 월말 약 $13,268이 예상됩니다.
+
+■ 어제 비용 분석
+어제 비용은 EC2가 88%($111)로 가장 큰 비중을 차지했습니다. 그 안에서는 swjeong의 us-west-2 inf2.24xlarge 1대($53, 48%)가 1대 평균 8시간 가동되어 가장 큰 비중을 만들었고, jhpark의 inf2.24xlarge 3대($22, 20%)가 1대 평균 1시간 가동되어 다음으로 큰 비중을 차지했으며, mhsong의 m5.8xlarge 5대($18, 16%)도 1대 평균 30분 가동되어 일부를 차지합니다. EC2는 이번 달 일평균 $429 수준으로 발생 중이며 어제 $111은 평소보다 낮은 흐름입니다. S3는 어제 $9가 발생했으며 swjeong의 us-west-2 스토리지($3, 33%)와 mhsong의 스토리지($2, 22%)가 주된 항목입니다. 그 외 EKS $2, Bedrock $1 등 합쳐 약 $3가 함께 발생했습니다.
+
+■ 이번 달 누계 분석
+EC2 $3,432 (이번 달 누계의 86.0%, 일평균 $429 수준)가 가장 큰 비중을 차지합니다. 이외에 S3 $310 (이번 달 누계의 7.8%, 일평균 $39 수준), EKS $145 (이번 달 누계의 3.6%, 일평균 $18 수준), Bedrock $96 (이번 달 누계의 2.4%, 일평균 $12 수준)입니다.
+
+(여기서 출력 끝 — 그 뒤 "▸ 이번 달 Top..." / "이번 달 들어 ... 처음 등장" 등은 일체 작성 금지. Python이 추가함.)
+"""
 
 
 # 서비스명 단축 — Python에서 미리 처리해 LLM에 전달
 _SVC_SHORT = {
-    'Amazon Elastic Compute Cloud': 'EC2',
-    'Amazon Simple Storage Service': 'S3',
-    'AWS Lambda': 'Lambda',
-    'Elastic Load Balancing': 'ELB',
-    'Amazon Virtual Private Cloud': 'VPC',
-    'AWS Cost Explorer': 'Cost Explorer',
-    'AmazonCloudWatch': 'CloudWatch',
-    'Amazon CloudFront': 'CloudFront',
-    'Amazon Bedrock': 'Bedrock',
+    'Amazon Elastic Compute Cloud':                    'EC2',
+    'Amazon Elastic Compute Cloud - Compute':          'EC2',
+    'EC2 - Other':                                     'EC2-Other',
+    'Amazon Simple Storage Service':                   'S3',
+    'AWS Lambda':                                      'Lambda',
+    'Elastic Load Balancing':                          'ELB',
+    'Amazon Virtual Private Cloud':                    'VPC',
+    'AWS Cost Explorer':                               'Cost Explorer',
+    'AmazonCloudWatch':                                'CloudWatch',
+    'Amazon CloudFront':                               'CloudFront',
+    'Amazon Bedrock':                                  'Bedrock',
+    'Amazon Elastic Container Service for Kubernetes': 'EKS',
+    'Amazon Elastic Container Service':                'ECS',
+    'Amazon Relational Database Service':              'RDS',
+    'Amazon DynamoDB':                                 'DynamoDB',
+    'Amazon Route 53':                                 'Route 53',
+    'Amazon Simple Notification Service':              'SNS',
+    'Amazon Simple Queue Service':                     'SQS',
+    'Amazon SageMaker':                                'SageMaker',
+    'Amazon API Gateway':                              'API Gateway',
+    'AWS Key Management Service':                      'KMS',
+    'AWS Secrets Manager':                             'Secrets Manager',
 }
 
 
-def _svc_label(svc: dict) -> str:
-    if svc['change_type'] == 'new':
-        return '신규'
-    if svc['change_type'] == 'stopped':
-        return '중단'
-    return '증가' if svc['total_diff'] > 0 else '감소'
+def _format_breakdown_line(d: dict) -> str:
+    """
+    Q14 / Q15 의 한 (IAM User × usage_type) 행을 LLM 입력 라인으로 포맷.
+
+    "(생성자 미상)" 라벨 회피:
+      - IAM agnostic usage_type (데이터 전송, CloudWatch 등) → IAM 정보 없이 usage_human만
+      - 그 외 IAM 비어 있음 → "태그 없는 {usage_human}" (LLM이 그대로 사용)
+      - IAM 있음 → "{iam}: {usage_human}"
+
+    카운트:
+      - countable usage_type (BoxUsage, SpotUsage, VolumeUsage, ...) 만 ×N개 표기
+
+    사용 시간:
+      - hourly usage_type (BoxUsage/SpotUsage/NAT Gateway 등) 만 표기
+      - usage_amount 합산을 인스턴스 수로 나눠 "1대 평균 N시간" 형태로 노출
+        (합산 단독은 24시간 초과 값이 나와 사용자에게 직관적이지 않음)
+      - 평균 ≥ 22시간이면 "풀 가동", 미만이면 평균 시간 표시
+    """
+    iam         = d.get('iam_user', '') or ''
+    usage_type  = d.get('usage_type', '') or ''
+    usage_human = d.get('usage_human', '') or usage_type
+    count       = int(d.get('count', 1) or 1)
+    hours       = float(d.get('usage_hours', 0) or 0)
+
+    count_str = f" ×{count}개" if (count > 1 and _is_countable(usage_type)) else ''
+
+    hours_str = ''
+    if hours > 0 and _is_hourly(usage_type):
+        avg_hours = hours / count if count > 0 else hours
+        if avg_hours >= 22:
+            hours_str = ' 풀 가동'
+        elif avg_hours >= 1:
+            hours_str = f' 1대 평균 {avg_hours:.0f}시간'
+        else:
+            # 1시간 미만 — 분 단위로 표현
+            avg_minutes = avg_hours * 60
+            hours_str = f' 1대 평균 {avg_minutes:.0f}분'
+
+    suffix = count_str + hours_str
+
+    if not iam:
+        if _is_iam_agnostic(usage_type):
+            return f"{usage_human}{suffix}"
+        return f"태그 없는 {usage_human}{suffix}"
+    return f"{iam}: {usage_human}{suffix}"
 
 
-def _detail_label(d: dict) -> str:
-    if d['change_type'] == 'new':
-        return '신규 발생'
-    if d['change_type'] == 'stopped':
-        return '어제 중단'
-    return '증가' if d['diff'] > 0 else '감소'
+def _fmt_top_services(rows: list, d1_total: float) -> str:
+    """
+    Q14 결과 → LLM 입력 텍스트.
+    각 서비스 헤더에 어제 총비용 대비 비중(%) 포함.
+    각 IAM × 타입 라인에 해당 서비스 비용 대비 비중(%)을 함께 표기.
 
-
-def _fmt_section(rows: list) -> str:
+    LLM 입력 라인 형식 예:
+        EC2  $111.00  ▸ 어제의 88%
+            swjeong: ... inf2.24xlarge ×1개 1대 평균 8시간  $53.00 (47%)
+    위와 같이 IAM × 타입 라인 끝의 (X%)는 **상위 서비스 헤더 비중과 같은 맥락**.
+    LLM은 이 % 값을 "($53, 47%)" 처럼 금액과 함께 그대로 옮긴다.
+    """
     if not rows:
-        return '  (없음)'
+        return '(없음)'
     blocks = []
     for svc in rows:
-        short  = _SVC_SHORT.get(svc['service'], svc['service'])
-        amount = abs(svc['total_diff'])
-        label  = _svc_label(svc)
-        header = (
-            f"{short}  ${amount:,.2f}  [{label}]"
-            f"  어제 ${svc['cost_d1']:,.2f} / 그제 ${svc['cost_d2']:,.2f}"
-        )
-        detail_lines = []
-        for d in svc['details']:
-            who       = d['iam_user'] if d.get('iam_user') else '(생성자 미상)'
-            count_str = f" ×{d['count']}개" if d.get('count', 1) > 1 else ""
-            dlabel    = _detail_label(d)
-            detail_lines.append(
-                f"    {who}: {d['usage_human']}{count_str}"
-                f"  [{dlabel}]  어제 ${d['cost_d1']:,.2f} / 그제 ${d['cost_d2']:,.2f}"
+        short = _SVC_SHORT.get(svc['service'], svc['service'])
+        svc_cost = svc['cost_d1']
+        share = (svc_cost / d1_total * 100) if d1_total > 0 else 0
+        header = f"{short}  ${svc_cost:,.2f}  ▸ 어제의 {share:.0f}%"
+        lines = []
+        for d in svc.get('breakdowns', []):
+            if d.get('cost_d1', 0) < 1.0:
+                continue
+            line = _format_breakdown_line(d)
+            sub_share = (d['cost_d1'] / svc_cost * 100) if svc_cost > 0 else 0
+            lines.append(
+                f"    {line}  ${d['cost_d1']:,.2f} ({sub_share:.0f}%)"
             )
-        blocks.append(header + ('\n' + '\n'.join(detail_lines) if detail_lines else ''))
+        if lines:
+            blocks.append(header + '\n' + '\n'.join(lines))
+        else:
+            blocks.append(header)
     return '\n'.join(blocks)
 
 
-def _build_user_message(
-    d1_date: date, d2_date: date,
-    d1_total: float, d2_total: float,
-    service_rows: list, usage_type_rows: list, resource_rows: list,
+def _fmt_mtd_breakdown(service_mtd: dict, mtd_total: float, mtd_days_elapsed: int) -> str:
+    """
+    Q16 결과 → LLM 입력 텍스트 (이번 달 누계 섹션).
+    서비스별 MTD 누계, 누계 대비 비중(%), 일평균을 함께 표기.
+
+    "일평균 $X 수준" 형식으로 출력 — LLM이 "수준" 단어를 한글로 잘못 옮기지 않도록
+    입력에 직접 명시 (Nova Micro의 한글 typo 방어).
+
+    Returns:
+        예) "EC2  $3,432.00  ▸ 이번 달 누계의 86.0%  일평균 $429.00 수준"
+    """
+    if not service_mtd or mtd_total <= 0:
+        return '(없음)'
+    sorted_svcs = sorted(service_mtd.items(), key=lambda x: x[1], reverse=True)[:5]
+    lines = []
+    for service, mtd in sorted_svcs:
+        if mtd < 0.01:
+            continue
+        short = _SVC_SHORT.get(service, service)
+        share = (mtd / mtd_total * 100) if mtd_total > 0 else 0
+        daily_avg = (mtd / mtd_days_elapsed) if mtd_days_elapsed > 0 else 0
+        lines.append(
+            f"{short}  ${mtd:,.2f}  ▸ 이번 달 누계의 {share:.1f}%  일평균 ${daily_avg:,.2f} 수준"
+        )
+    return '\n'.join(lines) if lines else '(없음)'
+
+
+# ---------------------------------------------------------------------------
+# Slack 출력용 결정론 렌더러 (LLM 미경유)
+# ---------------------------------------------------------------------------
+#
+# Top 사용자 / 신규 발생은 구조 데이터를 그대로 매핑하면 되는 항목이므로
+# LLM에 맡기지 않는다. Nova Micro 같은 작은 모델은 "입력 N개를 그대로 N개로
+# 출력하라" 류 카운팅 제약을 흔히 어겨 Top3/Top4 잘림, 통째로 누락 같은
+# 사고를 낸다. Python에서 직접 렌더링하면 100% 일관된 출력이 보장된다.
+
+def format_top_users_section_for_slack(top_users_mtd: list, mtd_total: float) -> str:
+    """
+    Q17 결과 → Slack 출력 문자열 (결정론).
+
+    출력 형식:
+        ▸ 이번 달 Top{N} 사용자
+        • <user> — $<금액> (이번 달 누계의 X.X%): <서비스> <usage> $<금액> (본인 비용의 X.X%), ...
+
+    Args:
+        top_users_mtd: fetch_mtd_top_users_with_breakdown 반환값
+        mtd_total:     이번 달 누계 총비용
+
+    Returns:
+        섹션 문자열 (헤더 1줄 + 사용자 N줄). 데이터 없으면 빈 문자열.
+    """
+    if not top_users_mtd or mtd_total <= 0:
+        return ''
+
+    n = len(top_users_mtd)
+    lines = [f"▸ 이번 달 Top{n} 사용자"]
+    for u in top_users_mtd:
+        user      = u['iam_user']
+        user_cost = u['mtd_total']
+        share     = (user_cost / mtd_total * 100) if mtd_total > 0 else 0
+
+        breakdown_parts = []
+        for d in u.get('breakdowns', []):
+            if d.get('cost', 0) < 1.0:
+                continue
+            short_svc   = _SVC_SHORT.get(d['service'], d['service'])
+            usage_human = d.get('usage_human') or d.get('usage_type', '')
+            sub_share   = (d['cost'] / user_cost * 100) if user_cost > 0 else 0
+            count_str   = (
+                f" ×{d['count']}개"
+                if d.get('count', 0) > 1 and _is_countable(d.get('usage_type', ''))
+                else ''
+            )
+            breakdown_parts.append(
+                f"{short_svc} {usage_human}{count_str} ${d['cost']:,.2f} (본인 비용의 {sub_share:.1f}%)"
+            )
+
+        line = f"• {user} — ${user_cost:,.2f} (이번 달 누계의 {share:.1f}%)"
+        if breakdown_parts:
+            line += ": " + ", ".join(breakdown_parts)
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def format_new_costs_section_for_slack(new_costs: list, top_services: list) -> str:
+    """
+    Q15 결과 → Slack 출력 문자열 (결정론).
+
+    어제 ≥ _NEW_COST_THRESHOLD ($10 기본) 로 새로 등장한 (service, IAM, usage_type) 조합만 노출.
+    [신규 서비스] 라벨은 그 서비스가 어제 Top N에 없을 때, [신규 조합]은 있을 때.
+
+    출력 형식:
+        ▸ 이번 달 신규 발생 (어제 ≥ $10)
+        • [신규 서비스] EKS $12.40 — mhsong: us-west-2 EKS 클러스터 운영 시간
+        • [신규 조합]   EC2 $53.00 — swjeong: us-west-2 inf2.24xlarge 온디맨드 인스턴스 ×1개 1대 평균 8시간
+
+    Args:
+        new_costs:     fetch_month_new_costs 반환값
+        top_services:  어제 Top N 서비스 (라벨 분류용)
+
+    Returns:
+        섹션 문자열. 데이터 없으면 빈 문자열.
+    """
+    if not new_costs:
+        return ''
+
+    top_service_names = {svc['service'] for svc in (top_services or [])}
+
+    lines = [f"▸ 이번 달 신규 발생 (어제 ≥ ${_NEW_COST_THRESHOLD:.0f})"]
+    for r in new_costs:
+        short     = _SVC_SHORT.get(r['service'], r['service'])
+        item_line = _format_breakdown_line(r)
+        label     = '[신규 조합]' if r['service'] in top_service_names else '[신규 서비스]'
+        lines.append(f"• {label} {short} ${r['cost_d1']:,.2f} — {item_line}")
+    return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 그룹 묶음 / 패턴 신호 계산
+# ---------------------------------------------------------------------------
+#
+# LLM 입력에 미리 계산해 넣을 신호들 — LLM이 직접 추론하지 않도록 사실 기반으로 제공.
+# 모든 신호는 "단정"이 아니라 "관찰된 사실"로만 표현됨.
+
+def _detect_signals(
+    top_services: list,
+    d1_total: float,
+    service_mtd: dict = None,
+    mtd_days_elapsed: int = 0,
+) -> list:
+    """
+    Q14 + Q16 데이터에서 LLM이 단독 추론하기 어려운 패턴/위험/페이스 신호를
+    사실 기반으로 추출. 단정 표현 없음.
+
+    반환되는 신호 종류:
+        [페이스]      서비스별 이번 달 누계 / 일평균 / 어제 비중 — "지속" 판단 근거
+        [묶음]        같은 (서비스, usage_human) 안에서 IAM 분포
+        [동일 사용자]  같은 IAM이 여러 서비스에 등장
+    """
+    signals = []
+    if not top_services or d1_total <= 0:
+        return signals
+
+    # 0) 서비스별 페이스 — Q14 어제 Top + Q16 MTD 누계로 "지속/돌발" 판단 근거
+    #    흐름 라벨을 Python에서 직접 계산해 LLM이 임의 해석하지 않도록 한다.
+    if service_mtd and mtd_days_elapsed >= 2:
+        for svc in top_services:
+            mtd = service_mtd.get(svc['service'], 0.0)
+            if mtd <= 0.01:
+                continue
+            short     = _SVC_SHORT.get(svc['service'], svc['service'])
+            daily_avg = mtd / mtd_days_elapsed
+            ratio_pct = (svc['cost_d1'] / daily_avg * 100) if daily_avg > 0 else 0
+
+            if ratio_pct < 80:
+                flow_label = '평소보다 낮은 흐름'
+            elif ratio_pct <= 120:
+                flow_label = '평소 수준'
+            else:
+                flow_label = '평소보다 높은 흐름'
+
+            signals.append(
+                f"[{short} 페이스] 이번 달 누계 ${mtd:,.2f} / 일평균 ${daily_avg:,.2f} / "
+                f"어제 ${svc['cost_d1']:,.2f} (일평균의 {ratio_pct:.0f}%) — {flow_label}"
+            )
+
+    # 1) 인스턴스 타입 묶음 — 같은 (service, usage_human) 안에 여러 행이 있는지
+    type_groups = defaultdict(list)
+    for svc in top_services:
+        for d in svc.get('breakdowns', []):
+            if d.get('cost_d1', 0) < 1.0:
+                continue
+            key = (svc['service'], d.get('usage_human', ''))
+            type_groups[key].append(d)
+
+    for (service, usage_human), entries in type_groups.items():
+        if len(entries) < 2:
+            continue
+        if not _is_countable(entries[0].get('usage_type', '')):
+            continue
+        total_cost  = sum(e['cost_d1'] for e in entries)
+        total_count = sum(e.get('count', 0) for e in entries)
+        if total_count < 2:
+            continue
+        short = _SVC_SHORT.get(service, service)
+        parts = []
+        for e in sorted(entries, key=lambda x: x['cost_d1'], reverse=True):
+            iam = e.get('iam_user') or '태그 없음'
+            parts.append(f"{iam} {e.get('count', 0)}대")
+        parts_str = ', '.join(parts)
+        signals.append(
+            f"[{short}] {usage_human} 총 {total_count}대 (${total_cost:,.2f}) — {parts_str}"
+        )
+
+    # 2) 멀티 서비스 IAM — 같은 IAM이 2개 이상 서비스에 비용 ≥ $1로 등장
+    iam_services = defaultdict(lambda: {'services': set(), 'cost': 0.0})
+    for svc in top_services:
+        for d in svc.get('breakdowns', []):
+            iam = d.get('iam_user', '')
+            if not iam:
+                continue
+            if d.get('cost_d1', 0) < 1.0:
+                continue
+            iam_services[iam]['services'].add(_SVC_SHORT.get(svc['service'], svc['service']))
+            iam_services[iam]['cost'] += d.get('cost_d1', 0)
+    for iam, info in iam_services.items():
+        if len(info['services']) >= 2:
+            svc_list = ', '.join(sorted(info['services']))
+            signals.append(
+                f"[동일 사용자] {iam}이 {svc_list}에 걸쳐 ${info['cost']:,.2f} 발생"
+            )
+
+    return signals
+
+
+def _fmt_signals(signals: list) -> str:
+    if not signals:
+        return '(특이 사항 없음)'
+    return '\n'.join(f"- {s}" for s in signals)
+
+
+def _calc_pace_context(
+    d1_total: float, mtd_total: float, mtd_days_elapsed: int, forecast_total: float,
 ) -> str:
-    diff = d1_total - d2_total
-    pct  = (diff / d2_total * 100) if d2_total else 0.0
+    """
+    어제 비용이 이번 달 페이스 대비 어떤 위치인지 사실로만 표현.
+    "이상치"·"평균보다 X% 큼" 같은 단정 표현 금지 — LLM이 자연어로 가공.
+    """
+    if mtd_days_elapsed < 1 or mtd_total <= 0:
+        return '(이번 달 페이스 데이터 없음)'
 
-    merged = _merge_rows(service_rows, resource_rows)
-    #print("merged")
-    #pprint(merged)
+    daily_avg = mtd_total / mtd_days_elapsed
+    parts = [f"이번 달 일평균: ${daily_avg:,.2f}"]
+    if forecast_total > 0:
+        parts.append(f"월말 총 예상: ${forecast_total:,.2f}")
+    return ' / '.join(parts)
 
-    increase_rows = [s for s in merged if s['total_diff'] > 0]
-    decrease_rows = [s for s in merged if s['total_diff'] < 0]
 
-    increase_text = _fmt_section(increase_rows)
-    decrease_text = _fmt_section(decrease_rows)
+# ---------------------------------------------------------------------------
+# LLM 입력 메시지 구성
+# ---------------------------------------------------------------------------
 
-    #print("increase_text")
-    #pprint(increase_text)
-    #print("decrease_text")
-    #pprint(decrease_text)
+def _build_user_message(
+    d1_date: date,
+    d1_total: float,
+    top_services: list,
+    mtd_total: float,
+    mtd_days_elapsed: int,
+    forecast_total: float,
+    service_mtd: dict = None,
+) -> str:
+    """
+    LLM 입력 메시지.
 
-    return f"""어제({d1_date}) AWS 비용: ${d1_total:,.2f}
-그제({d2_date}) AWS 비용: ${d2_total:,.2f}
-전일 대비: {_fmt_sign(diff)} ({pct:+.1f}%)
+    LLM에 raw 데이터 + 미리 계산된 그룹/패턴/페이스 신호를 같이 전달한다.
+    LLM은 이 데이터를 바탕으로 "어제 비용 분석" + "이번 달 누계 분석" 산문 요약만 생성.
+    Top 사용자 / 신규 발생은 Python에서 결정론적으로 렌더링하므로 LLM에 넣지 않는다.
+    """
+    top_text       = _fmt_top_services(top_services, d1_total)
+    mtd_break_text = _fmt_mtd_breakdown(service_mtd or {}, mtd_total, mtd_days_elapsed)
+    signals        = _detect_signals(
+        top_services, d1_total,
+        service_mtd=service_mtd, mtd_days_elapsed=mtd_days_elapsed,
+    )
+    signals_text   = _fmt_signals(signals)
 
-=== 비용이 증가한 서비스 ===
+    if mtd_days_elapsed >= 1 and mtd_total > 0:
+        mtd_line = f"이번 달 {mtd_days_elapsed}일 동안 ${mtd_total:,.2f} 사용."
+    else:
+        mtd_line = "이번 달 누계 데이터 없음."
 
-{increase_text}
+    forecast_line = (
+        f" 이대로 진행 시 월말 예상 약 ${forecast_total:,.2f}."
+        if forecast_total > 0 else ""
+    )
+    monthly_block = mtd_line + forecast_line
 
-=== 비용이 감소한 서비스 ===
+    # Top 사용자 / 신규 발생은 LLM에 넣지 않는다 — Python에서 직접 렌더링하므로
+    # 입력에서 빠져야 LLM이 임의로 비슷한 섹션을 만들거나 잘라내는 사고가 없다.
+    return f"""어제({d1_date}) AWS 비용  ${d1_total:,.2f}
+{monthly_block}
 
-{decrease_text}
+=== 어제 비용 분석 raw ===
+{top_text}
 
-위 데이터를 요약하세요."""
+=== 어제 관찰된 신호 ===
+{signals_text}
+
+=== 이번 달 누계 분석 raw ===
+{mtd_break_text}
+
+위 입력만을 사용해 시스템 지시에 따라 2섹션 한국어 보고를 작성하세요."""
 
 
 # ---------------------------------------------------------------------------
@@ -560,45 +1433,91 @@ def _build_user_message(
 # ---------------------------------------------------------------------------
 
 def summarize(
-    d1_date: date, d2_date: date,
-    d1_total: float, d2_total: float,
-    service_rows: list, usage_type_rows: list, resource_rows: list,
+    d1_date: date,
+    d1_total: float,
+    top_services: list,
+    mtd_total: float,
+    mtd_days_elapsed: int,
+    forecast_total: float,
+    service_mtd: dict = None,
 ) -> str:
     """
-    Nova Micro에게 비용 증감 원인 분석을 요청하고 요약 텍스트를 반환한다.
+    Nova Micro에 비용 요약 요청.
 
-    실패 시 폴백 텍스트 반환 (Lambda 전체 실패 방지).
+    Bedrock 호출 실패 시 예외를 그대로 raise한다. 호출자(collect_all)가
+    이를 잡아 fallback 텍스트를 만들고 예외 객체는 llm_error로 보관한다.
     """
     user_message = _build_user_message(
-        d1_date, d2_date, d1_total, d2_total,
-        service_rows, usage_type_rows, resource_rows,
+        d1_date=d1_date,
+        d1_total=d1_total,
+        top_services=top_services,
+        mtd_total=mtd_total,
+        mtd_days_elapsed=mtd_days_elapsed,
+        forecast_total=forecast_total,
+        service_mtd=service_mtd,
     )
-    #print("user_message")
-    #pprint(user_message)
-    try:
-        bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
-        body = json.dumps({
-            'system':   [{'text': _SYSTEM_PROMPT}],
-            'messages': [{'role': 'user', 'content': [{'text': user_message}]}],
-            'inferenceConfig': {
-                'max_new_tokens': 512,
-                'temperature': 0,
-            },
-        })
-        resp   = bedrock.invoke_model(
-            modelId=_BEDROCK_MODEL_ID,
-            body=body,
-            contentType='application/json',
-            accept='application/json',
-        )
-        result = json.loads(resp['body'].read())
-        return result['output']['message']['content'][0]['text'].strip()
+    bedrock = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
+    body = json.dumps({
+        'system':   [{'text': _SYSTEM_PROMPT}],
+        'messages': [{'role': 'user', 'content': [{'text': user_message}]}],
+        'inferenceConfig': {
+            # Nova Micro 의 최대 출력 토큰 (5,000) 까지 허용 — 2섹션 보고가 잘리지 않도록.
+            'max_new_tokens': 5000,
+            'temperature': 0,
+        },
+    })
+    resp   = bedrock.invoke_model(
+        modelId=_BEDROCK_MODEL_ID,
+        body=body,
+        contentType='application/json',
+        accept='application/json',
+    )
+    result = json.loads(resp['body'].read())
+    text   = result['output']['message']['content'][0]['text'].strip()
+    text   = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
 
-    except Exception as e:
-        log.error("Bedrock 호출 실패: %s", e)
-        diff = d1_total - d2_total
-        direction = "증가" if diff >= 0 else "감소"
-        return f"LLM 분석 실패 (Bedrock 오류). 전일 대비 ${abs(diff):,.2f} {direction}."
+    # 어색한 부정 진술 / 시스템 용어 노출이 LLM 출력에 들어왔을 경우 자동 제거.
+    # 시스템 프롬프트에 금지를 명시했으나 LLM이 어길 수 있으므로 방어적 후처리.
+    # 한 줄 단위로 매칭 — 해당 줄 전체 삭제.
+    bad_line_patterns = [
+        # 부정 진술 — "신규/새로/처음 + 없" 조합이면 줄 어디든 매칭, 줄 전체 삭제
+        r'^.*(?:신규|새로\s*비용|새로\s*발생|새로\s*등장|처음\s*등장|처음\s*발생).*없(?:습니다|음|으며|었습니다|었음).*$',
+        # "특이사항 ~" 도입어 + 부정 진술
+        r'^.*특이사항(?:으로|은)?.*없(?:습니다|음|으며).*$',
+        r'^\s*특이사항\s*없음\.?\s*$',
+        # 시스템 라벨 노출 — "관찰된 신호" 뒤 어떤 조사·동사가 와도 매칭
+        r'^.*관찰된\s*신호.*$',
+        r'^.*\[동일\s*사용자\].*$',
+        r'^.*\[페이스\].*$',
+        r'^.*\[묶음\].*$',
+        # 어색한 명사구
+        r'^.*(?:신규|발생)\s*항목(?:이|은|으로)?\s*없(?:습니다|음).*$',
+        # LLM이 Python 전용 영역(Top 사용자 / 신규 발생)을 흉내 내는 경우 차단.
+        # Python 측에서 결정론적으로 따로 출력하므로 LLM 본문에 새어 나오면 중복.
+        r'^\s*▸\s*이번\s*달\s*Top\s*\d+\s*사용자.*$',
+        r'^\s*▸\s*이번\s*달\s*신규\s*발생.*$',
+        r'^\s*•\s+.*\(이번\s*달\s*누계의.*\).*$',           # • <user> — $X (이번 달 누계의 ...) 패턴
+        r'^\s*•\s+\[신규\s*(?:서비스|조합)\].*$',           # • [신규 서비스/조합] ... 패턴
+        r'^.*이번\s*달\s*들어.*(?:처음\s*(?:등장|발생|비용)|새로\s*(?:등장|비용\s*발생)).*$',
+    ]
+    for pat in bad_line_patterns:
+        text = re.sub(pat, '', text, flags=re.MULTILINE)
+
+    # 한글 typo 방어 — Nova Micro가 "수준" 을 "수줤"·"수즌" 등으로 잘못 출력하는 경우.
+    # 입력 라인에 "$N 수준" 형식이 들어가지만 LLM이 한글 자모를 잘못 합치는 케이스 방어.
+    text = re.sub(r'(\$[\d,\.]+)\s*(수줤|수즌|숮준|수즁)', r'\1 수준', text)
+
+    # 가독성: 한 문단 안에서 마침표 뒤 다음 문장 시작 글자가 오면 줄 바꿈 삽입.
+    # - "~다. 그 안에서는" → "~다.\n그 안에서는"  (호흡 끊음)
+    # - "$229.53은" 같은 숫자 안의 마침표는 다음에 공백이 없어 영향 없음
+    # - "$5.40를" 도 매칭 안 됨 (마침표 다음이 공백+글자가 아님)
+    # - "kernel-fusion-benchmark" 같은 영어 소문자 시작 문장도 잡도록 a-z 포함
+    text = re.sub(r'\. ([가-힣a-zA-Z$])', r'.\n\1', text)
+
+    # 연속된 빈 줄을 한 줄로 정리
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -607,45 +1526,116 @@ def summarize(
 
 def collect_all(d1_date: date) -> dict:
     """
-    Athena 3개 쿼리 실행 + Nova Micro 요약 생성.
+    Athena 쿼리 + CE Forecast + Nova Micro 요약 일괄 수집.
 
-    Args:
-        d1_date: 리포트 기준일 (data_cur.py 와 동일한 d1_date 사용)
+    LLM 입력으로 사용:
+        Q14  fetch_top_services_with_breakdown    — 어제 절대값 Top + IAM 분해
+        Q15  fetch_month_new_costs                — 이번 달 신규 발생
+        Q16  fetch_service_mtd_breakdown          — 서비스별 MTD pace
+        Q17  fetch_mtd_top_users_with_breakdown   — 이번 달 누계 Top 사용자 + 서비스 분해
+        MTD  fetch_mtd_total_cur                  — 이번 달 누계
+        FCST fetch_cost_forecast (CE)             — 월말 예상
+
+    Slack 테이블 raw 데이터로만 사용 (LLM 미입력):
+        Q9, Q10, Q11
 
     Returns:
         {
-            'd1_date':       date,
-            'd2_date':       date,
-            'd1_total':      float,
-            'd2_total':      float,
-            'service_rows':  list,
-            'usage_type_rows': list,
-            'resource_rows': list,
-            'summary':       str,   # Nova Micro 요약
+            'd1_date':           date,
+            'd2_date':           date,
+            'd1_total':          float,
+            'd2_total':          float,
+            'service_rows':      list,   # Q9
+            'usage_type_rows':   list,   # Q10
+            'resource_rows':     list,   # Q11
+            'top_services':      list,   # Q14
+            'new_costs':         list,   # Q15
+            'service_mtd':       dict,   # Q16
+            'top_users_mtd':     list,   # Q17
+            'mtd_total':         float,
+            'mtd_days_elapsed':  int,
+            'forecast_total':    float,
+            'summary':           str,
+            'llm_error':         Exception | None,  # Bedrock 호출 실패 시 잡힌 예외
         }
     """
     d2_date = d1_date - timedelta(days=1)
-    athena  = boto3.client('athena', region_name='ap-northeast-2')
+    athena  = boto3.client('athena', region_name=_ATHENA_REGION)
+    ce      = boto3.client('ce', region_name='us-east-1')
 
     service_rows    = fetch_service_diff(athena, d1_date, d2_date)
     usage_type_rows = fetch_usage_type_diff(athena, d1_date, d2_date)
     resource_rows   = fetch_resource_diff(athena, d1_date, d2_date)
-
-    d1_total = sum(r['cost_d1'] for r in service_rows)
-    d2_total = sum(r['cost_d2'] for r in service_rows)
-
-    summary = summarize(
-        d1_date, d2_date, d1_total, d2_total,
-        service_rows, usage_type_rows, resource_rows,
+    top_services    = fetch_top_services_with_breakdown(
+        athena, d1_date,
+        top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
+    )
+    new_costs       = fetch_month_new_costs(athena, d1_date)
+    service_mtd     = fetch_service_mtd_breakdown(athena, d1_date)        # Q16
+    top_users_mtd   = fetch_mtd_top_users_with_breakdown(                  # Q17
+        athena, d1_date,
+        top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
     )
 
+    # 어제/그제 총비용은 변화 Top N(Q9, service_rows)이 아니라 그날 비용이 발생한
+    # 모든 서비스를 합산해야 한다. service_rows 는 HAVING ABS(diff)>0.01 + LIMIT 으로
+    # "변화가 큰 서비스"만 추리므로, 변화가 거의 없는(매일 일정한) 서비스의 비용이
+    # 누락돼 실제 총비용보다 작게 잡힌다. → Main 1 (fetch_daily_by_service_cur)과 동일하게
+    # 전체 합산해 "어제 총비용" 값을 일치시킨다.
+    d1_total = sum(fetch_daily_by_service_cur(athena, d1_date).values())
+    d2_total = sum(fetch_daily_by_service_cur(athena, d2_date).values())
+
+    mtd_total        = fetch_mtd_total_cur(athena, d1_date)
+    mtd_days_elapsed = d1_date.day
+
+    # CE Forecast = "오늘부터 월말까지" 예상. mtd_total + forecast = 월말 총 예상
+    try:
+        forecast = fetch_cost_forecast(ce)
+    except Exception as exc:
+        log.warning("CE forecast 실패 (무시): %s", exc)
+        forecast = 0.0
+    forecast_total = mtd_total + forecast if forecast > 0 else 0.0
+
+    # LLM 호출 실패 시 메인 메시지 발송은 fallback 텍스트로 진행하되,
+    # 잡은 예외 객체를 llm_error 로 보관해 호출자(send_main3_report)가
+    # 발송 후 별도 에러 알림을 만들 수 있도록 한다.
+    llm_error = None
+    try:
+        summary = summarize(
+            d1_date=d1_date,
+            d1_total=d1_total,
+            top_services=top_services,
+            mtd_total=mtd_total,
+            mtd_days_elapsed=mtd_days_elapsed,
+            forecast_total=forecast_total,
+            service_mtd=service_mtd,
+        )
+    except Exception as e:
+        log.error("Bedrock 호출 실패: %s", e)
+        summary   = f"LLM 분석 실패 (Bedrock 오류). 어제 총비용 ${d1_total:,.2f}."
+        llm_error = e
+
+    # Top 사용자 / 신규 발생은 결정론적으로 렌더링 — LLM이 카운트를 흔드는 사고 회피.
+    top_users_section = format_top_users_section_for_slack(top_users_mtd, mtd_total)
+    new_costs_section = format_new_costs_section_for_slack(new_costs, top_services)
+
     return {
-        'd1_date':         d1_date,
-        'd2_date':         d2_date,
-        'd1_total':        d1_total,
-        'd2_total':        d2_total,
-        'service_rows':    service_rows,
-        'usage_type_rows': usage_type_rows,
-        'resource_rows':   resource_rows,
-        'summary':         summary,
+        'd1_date':           d1_date,
+        'd2_date':           d2_date,
+        'd1_total':          d1_total,
+        'd2_total':          d2_total,
+        'service_rows':      service_rows,
+        'usage_type_rows':   usage_type_rows,
+        'resource_rows':     resource_rows,
+        'top_services':      top_services,
+        'new_costs':         new_costs,
+        'service_mtd':       service_mtd,
+        'top_users_mtd':     top_users_mtd,
+        'mtd_total':         mtd_total,
+        'mtd_days_elapsed':  mtd_days_elapsed,
+        'forecast_total':    forecast_total,
+        'summary':           summary,
+        'top_users_section': top_users_section,
+        'new_costs_section': new_costs_section,
+        'llm_error':         llm_error,
     }
