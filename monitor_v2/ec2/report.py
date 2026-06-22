@@ -610,6 +610,20 @@ def _send_dms(dm_targets: list) -> None:
 # 진입점
 # ---------------------------------------------------------------------------
 
+# 세금(VAT 10%) 배수. creator 기반 수치(Thread3 / Top5 IAM User)는 데이터 계층
+# (data_cur.py)에서 이미 ×1.10 적용됨. Main2 헤더의 집계값(서비스 합계 / Spot /
+# 인스턴스 타입 / 리전)은 세전이므로, 동일 기준(세후)으로 맞추기 위해 발송 직전 곱한다.
+TAX_MULTIPLIER = 1.10
+
+
+def _apply_tax_nested(type_cost: dict, mult: float) -> dict:
+    """{itype: {region: cost}} 의 모든 비용에 세금 배수를 곱한 새 dict 반환."""
+    return {
+        itype: {region: cost * mult for region, cost in regions.items()}
+        for itype, regions in type_cost.items()
+    }
+
+
 def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
     """
     Main 2 + 스레드 3개를 Block Kit으로 순차 발송하고, 조건부 DM을 발송한다.
@@ -627,18 +641,21 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
 
     #print("ec2_data")
     #pprint(ec2_data)
-    ec2_d1  = sum(v for k, v in cost_data['daily_d1'].items() if k in EC2_SERVICES)
-    ec2_d2  = sum(v for k, v in cost_data['daily_d2'].items() if k in EC2_SERVICES)
+    # 헤더 집계값은 세전(CUR unblended) → 세후로 통일하기 위해 ×TAX_MULTIPLIER.
+    # 단, ec2_user_mtd 는 by_creator_mtd 기반이라 데이터 계층에서 이미 세후 (재적용 금지).
+    ec2_d1  = sum(v for k, v in cost_data['daily_d1'].items() if k in EC2_SERVICES) * TAX_MULTIPLIER
+    ec2_d2  = sum(v for k, v in cost_data['daily_d2'].items() if k in EC2_SERVICES) * TAX_MULTIPLIER
     ec2_mtd = sum(
         sum(regions.values())
         for svc, regions in cost_data.get('by_region_mtd', {}).items()
         if svc in EC2_SERVICES
-    )
+    ) * TAX_MULTIPLIER
     ec2_user_mtd      = _ec2_by_user(cost_data.get('by_creator_mtd', {}))
-    ec2_type_cost_mtd = ec2_data.get('type_cost_mtd', {})
-    spot_d1           = ec2_data.get('spot_d1', 0.0)
-    spot_d2           = ec2_data.get('spot_d2', 0.0)
-    spot_mtd          = ec2_data.get('spot_mtd', 0.0)
+    ec2_type_cost     = _apply_tax_nested(ec2_data['type_cost'], TAX_MULTIPLIER)
+    ec2_type_cost_mtd = _apply_tax_nested(ec2_data.get('type_cost_mtd', {}), TAX_MULTIPLIER)
+    spot_d1           = ec2_data.get('spot_d1', 0.0) * TAX_MULTIPLIER
+    spot_d2           = ec2_data.get('spot_d2', 0.0) * TAX_MULTIPLIER
+    spot_mtd          = ec2_data.get('spot_mtd', 0.0) * TAX_MULTIPLIER
     instance_cost     = ec2_data.get('instance_cost', {})
     spot_prices       = ec2_data.get('spot_prices', {})
 
@@ -651,7 +668,7 @@ def send_main2_report(cost_data: dict, ec2_data: dict) -> None:
     main2_ts = slack.post_blocks(
         _build_main2(
             d1_date,
-            ec2_data['type_cost'],
+            ec2_type_cost,
             ec2_type_cost_mtd,
             ec2_d1, ec2_d2, ec2_mtd,
             ec2_user_mtd,
