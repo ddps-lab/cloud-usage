@@ -1,5 +1,5 @@
-import os
 import boto3
+import logging
 from datetime import datetime, timedelta, timezone
 
 from .cost.data_cur import collect_all as collect_cost_data
@@ -10,10 +10,9 @@ from .ec2.report_cur       import send_ec2_cur_report
 from .cost.report_analysis import send_main3_report
 from .slack import client as slack
 
-KST = timezone(timedelta(hours=9))
+log = logging.getLogger(__name__)
 
-# spotlake 계정은 CUR 미적재 → Cost Explorer(data.py) 경로로 임시 우회
-ACCOUNT_NAME = os.environ.get('ACCOUNT_NAME', '')
+KST = timezone(timedelta(hours=9))
 
 
 def lambda_handler(event, context):
@@ -41,6 +40,8 @@ def lambda_handler(event, context):
         각 단계(init / cost_collect / cost_report / ec2_collect / ec2_report / ai_analysis)를
         개별 try/except로 감싼다. 단계 실패 시 slack.post_error로 알림을 보내고
         had_error 플래그를 세운 뒤 가능한 후속 단계는 계속 진행한다 (부분 실패 허용).
+        cost_collect는 CUR/Athena 경로를 먼저 시도하고, 조회 실패 시 Cost Explorer
+        경로로 fallback한다. 두 경로 모두 실패해야 cost_collect 실패로 처리한다.
         cost_collect는 EC2 단계의 선행 의존이라 실패 시 EC2 단계를 건너뛴다.
 
     Returns:
@@ -55,7 +56,7 @@ def lambda_handler(event, context):
 
     # ── 날짜 산정 ─────────────────────────────────────────────────
     try:
-        today_actual = datetime.now(KST).date()   # 디크리먼트 전 실제 오늘 (spotlake CE 경로용)
+        today_actual = datetime.now(KST).date()   # 디크리먼트 전 실제 오늘 (CE fallback 경로용)
         today_kst = today_actual
         if date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
@@ -98,18 +99,20 @@ def lambda_handler(event, context):
     base_meta['account_id'] = account_id
 
     # ── Cost 데이터 수집 ──────────────────────────────────────────
-    # spotlake 계정: CUR 미적재 → Cost Explorer(data.py)로 우회.
+    # 기본: CUR/Athena 경로(data_cur.py). d1 = today_kst (forecast만 CE 사용).
+    # CUR 미적재·테이블 부재·Athena 쿼리 실패 등으로 조회가 안 되면
+    # Cost Explorer(data.py)로 fallback.
     #   CE는 24~48h 지연 → collect_all 내부에서 항상 d1 = (인자) - 2.
     #   today_actual을 넘겨 date_mode와 무관하게 항상 D-2 리포트.
-    # 그 외 계정: 기존 CUR/Athena 경로 그대로 (forecast만 CE 사용).
     try:
-        if ACCOUNT_NAME == 'spotlake':
+        cost_data = collect_cost_data(today_kst)
+    except Exception as cur_err:
+        log.warning("CUR 조회 실패 → Cost Explorer fallback: %s", cur_err)
+        try:
             cost_data = collect_cost_data_ce(today_actual)
-        else:
-            cost_data = collect_cost_data(today_kst)
-    except Exception as e:
-        slack.post_error(context='cost_collect', error=e, meta=base_meta)
-        return 500
+        except Exception as e:
+            slack.post_error(context='cost_collect', error=e, meta=base_meta)
+            return 500
 
     base_meta['date'] = str(cost_data.get('d1_date', ''))
 
