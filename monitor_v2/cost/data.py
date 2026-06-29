@@ -251,12 +251,14 @@ def collect_all(today_kst: date) -> dict:
 
     CE 데이터 지연:
         Cost Explorer는 약 24~48시간 지연이 있어 당일/전일 데이터가 미집계 상태일 수 있다.
-        따라서 리포트 기준일(d1_date)은 today_kst - 2일로 고정하고,
+        리포트 기준일(d1_date)은 인자(today_kst) 그대로 — CUR 경로(data_cur.collect_all)와
+        동일하게 date_mode를 반영한다 (yesterday→어제, today→오늘).
+        ⚠ d1이 오늘/어제면 CE 24~48h 지연으로 아직 부분 집계일 수 있어 금액이 과소 표시될 수 있다.
         forecast만 현재 날짜(today_kst) 기준으로 조회한다.
 
     Returns:
         {
-            'd1_date':        date,  # 리포트 대상일 (today - 2일)
+            'd1_date':        date,  # 리포트 대상일 (= 인자 today_kst, date_mode 반영)
             'daily_d1':       dict,  # {service: float} d1_date
             'daily_d2':       dict,  # {service: float} d1_date - 1일
             'by_creator':     dict,  # {service: {creator: float}} d1_date
@@ -270,11 +272,12 @@ def collect_all(today_kst: date) -> dict:
     """
     ce = boto3.client('ce', region_name='us-east-1')
 
-    # CE 데이터 2일 지연 → 리포트 기준일을 today - 2일로 설정
-    d1_date = today_kst - timedelta(days=2)
+    # 리포트 기준일(d1_date) = 인자 그대로 (offset 0) — CUR 경로와 동일, date_mode 반영.
+    # ⚠ d1이 오늘/어제면 CE 24~48h 지연으로 아직 부분 집계일 수 있음(금액 과소 표시 가능).
+    d1_date = today_kst
 
-    period_d1 = _build_day_period(today_kst, days_ago=2)
-    period_d2 = _build_day_period(today_kst, days_ago=3)
+    period_d1 = _build_day_period(today_kst, days_ago=0)
+    period_d2 = _build_day_period(today_kst, days_ago=1)
 
     # MTD: d1_date 기준 월 1일 ~ d1_date 포함 (End exclusive = d1_date + 1)
     period_mtd_this = {

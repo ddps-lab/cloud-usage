@@ -15,6 +15,22 @@ log = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
 
 
+def _has_cost_data(cost_data: dict) -> bool:
+    """CUR 조회 결과에 의미있는 비용 데이터가 있는지 판단.
+
+    daily_d1 / daily_d2 가 모두 비어 있고 MTD 총액도 0이면 (해당 월 CUR 미적재 등)
+    '데이터 없음'으로 보고 CE fallback 대상이 된다. 예외는 아니지만 빈 결과인
+    경우(예: 6월분 CUR 미적재)를 잡아내기 위한 판정.
+    """
+    if not cost_data:
+        return False
+    return bool(
+        cost_data.get('daily_d1')
+        or cost_data.get('daily_d2')
+        or (cost_data.get('mtd_this') or 0) > 0
+    )
+
+
 def lambda_handler(event, context):
     """
     Lambda 핸들러.
@@ -33,8 +49,9 @@ def lambda_handler(event, context):
         'analysis' → Main 3 (비용 변화 AI 분석)  (KST 08:15 트리거)
 
     date_mode 동작:
-        'today'     → today_kst 그대로 → d1_date = today - 1  (KST 22:00, CUR 당일 반영 후)
-        'yesterday' → today_kst - 1   → d1_date = today - 2  (KST 08:00, CUR 전날까지만 반영)
+        'today'     → today_kst = 오늘     → d1_date = 오늘  (KST 22:00, CUR 당일 반영 후)
+        'yesterday' → today_kst = 오늘 - 1 → d1_date = 어제  (KST 08:00, CUR 전날까지만)
+        ※ CUR·CE 두 경로 모두 today_kst를 받아 동일한 d1_date를 사용 (date_mode 반영).
 
     에러 처리:
         각 단계(init / cost_collect / cost_report / ec2_collect / ec2_report / ai_analysis)를
@@ -56,8 +73,7 @@ def lambda_handler(event, context):
 
     # ── 날짜 산정 ─────────────────────────────────────────────────
     try:
-        today_actual = datetime.now(KST).date()   # 디크리먼트 전 실제 오늘 (CE fallback 경로용)
-        today_kst = today_actual
+        today_kst = datetime.now(KST).date()
         if date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
     except Exception as e:
@@ -100,16 +116,24 @@ def lambda_handler(event, context):
 
     # ── Cost 데이터 수집 ──────────────────────────────────────────
     # 기본: CUR/Athena 경로(data_cur.py). d1 = today_kst (forecast만 CE 사용).
-    # CUR 미적재·테이블 부재·Athena 쿼리 실패 등으로 조회가 안 되면
-    # Cost Explorer(data.py)로 fallback.
-    #   CE는 24~48h 지연 → collect_all 내부에서 항상 d1 = (인자) - 2.
-    #   today_actual을 넘겨 date_mode와 무관하게 항상 D-2 리포트.
+    # 다음 두 경우 모두 Cost Explorer(data.py)로 fallback:
+    #   (1) Athena 쿼리 예외 (CUR 테이블 부재 등)
+    #   (2) 예외는 없지만 조회 결과가 비어 있음 (해당 월 CUR 미적재 — 6월처럼)
+    #   CE 경로도 today_kst를 받아 CUR과 동일한 기준일(d1 = today_kst)을 쓴다.
+    #   → date_mode가 그대로 반영됨 (yesterday→어제). ⚠ CE 지연으로 당일/어제는 부분 집계일 수 있음.
+    cost_data = None
     try:
         cost_data = collect_cost_data(today_kst)
+        if not _has_cost_data(cost_data):
+            log.warning("CUR 조회 결과 없음 → Cost Explorer fallback (d1=%s)",
+                        cost_data.get('d1_date'))
+            cost_data = None
     except Exception as cur_err:
         log.warning("CUR 조회 실패 → Cost Explorer fallback: %s", cur_err)
+
+    if cost_data is None:
         try:
-            cost_data = collect_cost_data_ce(today_actual)
+            cost_data = collect_cost_data_ce(today_kst)
         except Exception as e:
             slack.post_error(context='cost_collect', error=e, meta=base_meta)
             return 500
