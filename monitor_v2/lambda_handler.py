@@ -47,6 +47,11 @@ def lambda_handler(event, context):
         'ec2'      → Main 2 (EC2 상세)
         'all'      → Main 1 + Main 2  (KST 22:05 트리거)
         'analysis' → Main 3 (비용 변화 AI 분석)  (KST 08:15 트리거)
+        'hyperun'  → Main 4 (hyperun 으로 낸 job 의 team/user/vendor 별 비용)
+
+    ★ 'hyperun' 은 AWS 를 전혀 안 본다. 숫자는 hyperun gateway 의 GET /v1/usage 가
+    PacsJob 에서 뽑아 준다. 다른 vendor(RunPod, Shadeform, GCP)의 지출은 AWS CUR
+    에 한 줄도 안 남으므로 Main 1 의 Athena 경로로는 애초에 보이지 않는다.
 
     date_mode 동작:
         'today'     → today_kst = 오늘     → d1_date = 오늘  (KST 22:00, CUR 당일 반영 후)
@@ -88,6 +93,41 @@ def lambda_handler(event, context):
         except Exception as e:
             slack.post_error(
                 context='ai_analysis',
+                error=e,
+                meta={**base_meta, 'date': str(today_kst)},
+            )
+            return 500
+
+    # ── Main 4: hyperun 으로 낸 job (독립 실행) ─────────────────
+    #
+    # 앞의 셋과 달리 AWS 를 전혀 안 본다. 숫자는 hyperun gateway 가 PacsJob 에서
+    # 뽑아 주고 이 함수는 받아서 그린다. 그래서 아래의 sts / region 초기화보다
+    # 앞에 있다 — 그 초기화가 실패해도 이 보고서는 나갈 수 있어야 한다.
+    #
+    # ★ 설정이 없으면 조용히 건너뛴다. HYPERUN_API_BASE 나 HYPERUN_API_TOKEN 이
+    # 없는 것은 "아직 안 켰다" 이지 고장이 아니고, 그때마다 에러를 올리면 진짜
+    # 고장이 났을 때 아무도 안 본다. 로그에는 남는다.
+    if report_type == 'hyperun':
+        try:
+            from .hyperun.data import collect, UsageUnavailable
+            from .hyperun.report import send_main4_report
+        except ImportError as e:
+            slack.post_error(context='hyperun_import', error=e, meta=base_meta)
+            return 500
+        try:
+            usage = collect()
+        except UsageUnavailable as e:
+            log.warning('hyperun 사용량을 못 받았다: %s', e)
+            return 200
+        except Exception as e:
+            slack.post_error(context='hyperun_collect', error=e, meta=base_meta)
+            return 500
+        try:
+            send_main4_report(usage, today_kst)
+            return 200
+        except Exception as e:
+            slack.post_error(
+                context='hyperun_report',
                 error=e,
                 meta={**base_meta, 'date': str(today_kst)},
             )
