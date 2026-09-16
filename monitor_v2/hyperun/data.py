@@ -24,7 +24,7 @@ hyperun gateway 에서 일별 사용량을 받아온다.
 환경변수:
     HYPERUN_API_BASE    gateway 주소. 없으면 이 보고서를 건너뛴다.
     HYPERUN_API_TOKEN   operator 토큰. /v1/usage 는 operator 전용이다.
-    HYPERUN_USAGE_DAYS  며칠치를 받을지. 기본 30.
+    HYPERUN_USAGE_DAYS  며칠치를 받을지. 기본은 이달 1일부터 오늘까지다.
 """
 
 import json
@@ -34,7 +34,23 @@ import urllib.request
 
 API_BASE = os.environ.get('HYPERUN_API_BASE', '').rstrip('/')
 API_TOKEN = os.environ.get('HYPERUN_API_TOKEN', '').strip()
-USAGE_DAYS = int(os.environ.get('HYPERUN_USAGE_DAYS', '30'))
+# ★ 이달 1일부터 오늘까지. 고정된 30일이 아니다.
+#
+# 이 보고서가 말하는 두 숫자가 "당일" 과 "MTD" 이고, 둘 다 달을 기준으로 한다. 창을
+# 30일로 잡으면 매달 초에 지난달이 섞여 들어와서 스레드의 합계가 본문의 MTD 와
+# 달라진다 — 같은 화면 안에서 두 숫자가 어긋나면 어느 쪽도 못 믿는다.
+#
+# `days_this_month()` 가 그 길이를 센다. gateway 의 상한은 60일이라 어느 달이든 들어간다.
+def days_this_month(today=None) -> int:
+    """이달 1일부터 오늘까지 며칠인가. 1일이면 1."""
+    import datetime as _dt
+    day = today or _dt.datetime.now(_dt.timezone.utc).date()
+    return day.day
+
+
+# 환경변수로 덮어쓸 수 있게 두되, 기본은 위의 규칙이다. 지난달을 다시 보내야 하는
+# 경우가 있고 그때만 쓴다.
+USAGE_DAYS = int(os.environ['HYPERUN_USAGE_DAYS']) if os.environ.get('HYPERUN_USAGE_DAYS') else None
 
 # 30초. gateway 는 namespace 마다 apiserver 를 한 번씩 조회하므로 한 자릿수 초가
 # 보통이고, 그보다 오래 걸리면 답을 기다리는 것보다 보고서를 거르는 편이 낫다 —
@@ -65,7 +81,7 @@ def collect(days: int = None) -> dict:
         raise UsageUnavailable(
             'HYPERUN_API_BASE 와 HYPERUN_API_TOKEN 이 설정되지 않았다')
 
-    how_many = USAGE_DAYS if days is None else days
+    how_many = days if days is not None else (USAGE_DAYS or days_this_month())
     request = urllib.request.Request(
         f'{API_BASE}/v1/usage?days={how_many}',
         headers={'Authorization': f'Bearer {API_TOKEN}'})

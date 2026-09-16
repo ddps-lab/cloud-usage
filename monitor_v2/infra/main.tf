@@ -45,7 +45,7 @@ resource "null_resource" "build_package" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
+    command     = <<-EOT
       set -e
       rm -rf '${local.build_dir}'
       mkdir -p '${local.build_dir}'
@@ -88,7 +88,10 @@ resource "aws_lambda_function" "monitor_v2" {
   memory_size = var.lambda_memory_size
 
   environment {
-    variables = {
+    # ★ merge 로 쓰는 이유는 하나다: HYPERUN_USAGE_DAYS 는 보통 아예 없어야 한다.
+    # 빈 문자열로 넣어도 코드는 같게 동작하지만, 콘솔에서 환경변수를 읽는 사람에게
+    # 빈 값은 "설정이 안 됐나" 로 읽힌다. 없으면 없는 것이다.
+    variables = merge({
       SLACK_BOT_TOKEN        = var.slack_bot_token
       SLACK_CHANNEL_ID       = var.slack_channel_id
       ACCOUNT_NAME           = var.account_name
@@ -98,7 +101,18 @@ resource "aws_lambda_function" "monitor_v2" {
       ATHENA_REGION          = var.athena_region
       BEDROCK_MODEL_ID       = var.bedrock_model_id
       BEDROCK_REGION         = var.bedrock_region
-    }
+
+      # Main 4 (hyperun). 셋 다 비어 있으면 Main 4 만 조용히 쉬고 나머지는 그대로 돈다.
+      #
+      # ★ environment.variables 는 map 전체가 하나의 값이라 terraform 이 여기 있는 키를
+      # 전부 맞춘다. 콘솔에서 손으로 넣은 값이 있으면 apply 가 그것을 지운다. plan 의
+      # `Plan: 1 to change` 는 리소스 수이지 속성 수가 아니므로, apply 전에 `~` 줄을
+      # 하나씩 읽는다.
+      HYPERUN_API_BASE  = var.hyperun_api_base
+      HYPERUN_API_TOKEN = var.hyperun_api_token
+      },
+      var.hyperun_usage_days == "" ? {} : { HYPERUN_USAGE_DAYS = var.hyperun_usage_days },
+    )
   }
 
   tags = {
@@ -186,6 +200,36 @@ resource "aws_lambda_permission" "evening_analysis" {
   function_name = aws_lambda_function.monitor_v2.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.evening_analysis.arn
+}
+
+# ── KST 22:20 hyperun (Main 4, 당일) ──────────────────────────────────
+#
+# ★ 앞의 셋과 달리 "전날" 이 아니라 당일이다. 끝난 하루가 아니라 지금 돌고 있는 job 이
+# 얼마를 쓰고 있는지가 이 보고서의 질문이고, KST 22:20 은 UTC 13:20 이라 그 날이 13 시간
+# 지난 시점이다. 끝난 날은 스레드의 일별 표에 그대로 남는다.
+#
+# date_mode 를 넘기지 않는다. Main 4 는 AWS 를 안 보므로 날짜를 고를 일이 없고,
+# report.py 가 UTC 오늘을 기준일로 쓴다.
+resource "aws_cloudwatch_event_rule" "evening_hyperun" {
+  name                = "${local.function_name}-evening-hyperun"
+  description         = "KST 22:20 hyperun job report (today, month to date)"
+  schedule_expression = "cron(20 13 * * ? *)"
+  state               = "ENABLED"
+}
+
+resource "aws_cloudwatch_event_target" "evening_hyperun" {
+  rule      = aws_cloudwatch_event_rule.evening_hyperun.name
+  target_id = "evening-hyperun"
+  arn       = aws_lambda_function.monitor_v2.arn
+  input     = jsonencode({ report_type = "hyperun" })
+}
+
+resource "aws_lambda_permission" "evening_hyperun" {
+  statement_id  = "AllowEventBridgeEveningHyperun"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.monitor_v2.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.evening_hyperun.arn
 }
 
 # ── CloudWatch Logs ───────────────────────────────────────────────────

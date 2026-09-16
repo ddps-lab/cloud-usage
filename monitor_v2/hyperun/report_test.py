@@ -37,13 +37,16 @@ def blocks_text(blocks) -> str:
 def usage(days=None, users=None, vendors=None, mtd=1204.88, mtd_jobs=12,
           mtd_hours=190.5, note="estimate"):
     return {
+        # 앞뒤가 맞는 하루다. 당일(09-16) 총액이 사용자 둘의 당일 합계와 같고,
+        # 어제(09-15)가 그 비교 대상이다. fixture 가 스스로 모순이면 test 를 읽는
+        # 사람이 무엇이 맞는 값인지 판단할 수 없다.
         'days': days if days is not None else [
             {'date': '2026-09-14', 'jobs': 1, 'gpu_hours': 4.0,
              'estimate_usd': 25.44, 'unpriced_jobs': 0},
-            {'date': '2026-09-15', 'jobs': 3, 'gpu_hours': 29.2,
+            {'date': '2026-09-15', 'jobs': 2, 'gpu_hours': 20.0,
+             'estimate_usd': 127.20, 'unpriced_jobs': 0},
+            {'date': '2026-09-16', 'jobs': 3, 'gpu_hours': 29.2,
              'estimate_usd': 186.11, 'unpriced_jobs': 0},
-            {'date': '2026-09-16', 'jobs': 0, 'gpu_hours': 2.0,
-             'estimate_usd': 12.72, 'unpriced_jobs': 0},
         ],
         'users': users if users is not None else [
             {'name': 'jglee', 'jobs': 9, 'gpu_hours': 120.0, 'estimate_usd': 763.2,
@@ -90,27 +93,29 @@ def test_절의_순서가_Main_1_과_같다():
 def test_제목에_기준일과_계정이_들어간다():
     text = blocks_text(r._build_main4(usage(), TODAY))
     assert 'hyperun Job Report' in text
-    assert '2026-09-15' in text, '제목의 날짜가 어제가 아니다'
+    assert '2026-09-16' in text, '제목의 날짜가 당일이 아니다'
 
 
 # --------------------------------------------------------------- 어제는 어제다
 
 
-def test_어제는_마지막으로_끝난_날이고_오늘이_아니다():
-    # ★ 오늘은 반만 끝났다. 오늘 숫자를 어제라고 부르면 읽는 동안 커지는 숫자가 된다.
+def test_본문이_말하는_날은_당일이다():
+    # ★ 당일은 아직 안 끝났고 그래서 이 숫자는 읽는 동안 커진다 — 그게 job 을
+    # 지켜보는 사람이 보고 싶은 것이다. 끝난 날은 스레드의 일별 표에 있다.
     text = blocks_text(r._build_main4(usage(), TODAY))
-    assert '$186.11' in text, '어제(09-15)의 금액이 본문에 없다'
-    assert '$12.72' not in text, '오늘(09-16)의 금액이 어제 자리에 들어갔다'
+    assert '$186.11' in text, '당일(09-16)의 금액이 본문에 없다'
+    assert '$127.20' not in text, '어제 금액이 당일 자리에 들어갔다'
+    assert '당일 (2026-09-16)' in text
 
 
-def test_그제가_있으면_어제대비를_말한다():
+def test_어제가_있으면_어제대비를_말한다():
     text = blocks_text(r._build_main4(usage(), TODAY))
     assert '▲' in text or '▼' in text
 
 
-def test_그제가_없으면_어제대비를_지어내지_않는다():
-    # 창이 하루뿐이면 비교 대상이 없다. "0%" 나 "▲ +100%" 는 없는 사실을 만든 것이다.
-    one_day = usage(days=[{'date': '2026-09-15', 'jobs': 1, 'gpu_hours': 4.0,
+def test_어제가_없으면_어제대비를_지어내지_않는다():
+    # 이달 1일이면 비교 대상이 없다. "0%" 나 "▲ +100%" 는 없는 사실을 만든 것이다.
+    one_day = usage(days=[{'date': '2026-09-16', 'jobs': 1, 'gpu_hours': 4.0,
                            'estimate_usd': 25.44, 'unpriced_jobs': 0}])
     text = blocks_text(r._build_main4(one_day, TODAY))
     assert '▲' not in text and '▼' not in text
@@ -119,20 +124,32 @@ def test_그제가_없으면_어제대비를_지어내지_않는다():
 # --------------------------------------------------------------- MTD
 
 
-def test_이달_누계가_본문에_있다():
+def test_MTD_가_본문에_있고_시간은_Hour_로_쓴다():
+    # ★ "기간 합계" 가 아니라 MTD 다. 창의 길이는 구현이 정하는 값이라 읽는 사람에게
+    # 의미가 없고, "이달 얼마" 는 예산을 보는 사람이 실제로 쓰는 단위다.
     text = blocks_text(r._build_main4(usage(), TODAY))
     assert '$1,204.88' in text
-    assert '이번달 누계' in text
-    assert '12건' in text and '190.5시간' in text
+    assert 'MTD' in text
+    assert '12건' in text and '190.5 Hour' in text
+    assert '시간`' not in text, '시간 대신 Hour 로 쓰기로 했다'
 
 
 # --------------------------------------------------------------- 사용자와 vendor
 
 
-def test_사용자는_어제_쓴_순서로_다섯까지():
-    text = blocks_text(r._build_main4(usage(), TODAY))
+def test_사용자는_한_줄이고_쓴_순서로_다섯까지():  # noqa: E302
+    # 두 줄로 쓰면 다섯 명이 열 줄이 되고, Slack 에서 열 줄은 스크롤이다 —
+    # 훑어보라고 만든 절이 훑어지지 않는다.
+    blocks = r._build_main4(usage(), TODAY)
+    rows = [b.to_dict() if hasattr(b, 'to_dict') else b for b in blocks]
+    line = [b['text']['text'] for b in rows
+            if b.get('type') == 'section' and '1. jglee' in b.get('text', {}).get('text', '')]
+    assert len(line) == 1
+    assert '\n' not in line[0], '줄바꿈이 있으면 한 줄이 아니다'
+    assert '$164.02' in line[0] and 'job 2건' in line[0] and 'GPU Hour' in line[0]
+
+    text = blocks_text(blocks)
     assert text.index('jglee') < text.index('max322318')
-    assert '$164.02' in text
 
 
 def test_어제_아무도_안_돌렸으면_그렇게_말한다():
@@ -140,7 +157,7 @@ def test_어제_아무도_안_돌렸으면_그렇게_말한다():
                           'estimate_usd': 763.2, 'day_jobs': 0,
                           'day_gpu_hours': 0.0, 'day_estimate_usd': 0.0}])
     text = blocks_text(r._build_main4(quiet, TODAY))
-    assert '어제 실행된 job 이 없습니다' in text
+    assert '오늘 아직 실행된 job 이 없습니다' in text
 
 
 def test_vendor_는_한_줄로_요약한다():
@@ -151,31 +168,23 @@ def test_vendor_는_한_줄로_요약한다():
 # --------------------------------------------------------------- 정직함
 
 
-def test_금액이_추정이라는_말이_반드시_남는다():
-    # ★ 이 줄이 이 보고서에서 가장 중요한 한 줄이다.
+def test_마지막_줄이_무엇을_셌고_무엇과_다른지를_한_줄로_말한다():
+    # ★ context 는 작은 글씨 한 줄이다. 앞 판에는 계산 근거와 실측 사례까지 네 문장을
+    # 넣었는데, 거기에 네 문장을 넣으면 아무도 안 읽는다. 한 줄이 두 가지를 동시에
+    # 말한다: 무엇을 셌는지, 그래서 무엇과 다를 수 있는지.
     text = blocks_text(r._build_main4(usage(), TODAY))
-    assert '추정' in text
-    assert '$11.07' in text and '$44.28' in text, '실측 근거가 빠졌다'
-
-
-def test_hyperun_으로_낸_job_만_센다고_말한다():
-    text = blocks_text(r._build_main4(usage(), TODAY))
-    assert 'hyperun 으로 낸 job 만' in text
-
-
-def test_가격을_모르는_job_이_있으면_합계가_적다고_말한다():
-    low = usage(days=[{'date': '2026-09-15', 'jobs': 2, 'gpu_hours': 8.0,
-                       'estimate_usd': 25.44, 'unpriced_jobs': 1}])
-    text = blocks_text(r._build_main4(low, TODAY))
-    assert '1건' in text and '적습니다' in text
+    assert 'hyperun으로 제출한 job만 집계하니 vendor 청구서와 다를 수 있습니다' in text
+    assert '$11.07' not in text, '실측 사례까지 넣으면 한 줄이 아니다'
 
 
 # --------------------------------------------------------------- 스레드
 
 
-def test_스레드에는_표가_있다():
-    text = blocks_text(r._build_thread('Thread 1  |  team 별', usage()['teams'], 30))
+def test_스레드_표는_MTD_와_당일을_나란히_둔다():
+    text = blocks_text(r._build_thread('Thread 1  |  team 별', usage()['teams'], TODAY))
     assert 'ddps' in text
+    assert 'MTD(추정)' in text and '당일(추정)' in text
+    assert 'GPU Hour' in text
 
 
 def test_일별_표는_아무것도_안_돈_날을_빼고_보인다():
@@ -186,6 +195,15 @@ def test_일별_표는_아무것도_안_돈_날을_빼고_보인다():
     text = blocks_text(r._build_thread_days(with_empty))
     assert '2026-09-15' in text
     assert '2026-09-10' not in text, '30일 창에서 빈 줄 스무 개는 표를 못 읽게 한다'
+
+
+def test_이달_1일부터의_창을_쓴다():
+    # 고정 30일이면 매달 초에 지난달이 섞여서 스레드 합계가 본문 MTD 와 달라진다.
+    # 같은 화면 안에서 두 숫자가 어긋나면 어느 쪽도 못 믿는다.
+    import datetime as _dt
+    from monitor_v2.hyperun.data import days_this_month
+    assert days_this_month(_dt.date(2026, 9, 16)) == 16
+    assert days_this_month(_dt.date(2026, 10, 1)) == 1
 
 
 def test_일별_표가_자정을_넘긴_job_의_셈법을_설명한다():
