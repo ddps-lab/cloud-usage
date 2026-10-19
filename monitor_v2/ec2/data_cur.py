@@ -163,17 +163,20 @@ def collect_instance_cost_cur(athena, d1_date: date) -> dict:
                 'usage_hours':   float,  # 실 사용 시간 (h)
                 'instance_type': str,
                 'region':        str,
-                'iam_user':      str,    # CUR aws:createdBy → 사용자명
+                'iam_user':      str,    # cost/data_cur 공용 creator CASE 결과
             }
         }
     """
     year, month = _partition(d1_date)
+    # aws:createdBy 를 그대로 쪼개면 EKS 노드그룹 / ASG 가 띄운 인스턴스는
+    # 'AutoScaling' 이 된다. Thread 와 같은 creator CASE 로 사람 이름을 찾는다.
+    creator_case_sql = _build_creator_case_sql(athena)
     sql = f"""
         SELECT
             line_item_resource_id                                               AS instance_id,
             product_instance_type                                               AS instance_type,
             COALESCE(NULLIF(product_region_code, ''), 'global')                AS region,
-            SPLIT_PART(COALESCE(resource_tags_aws_created_by, ''), ':', 3)     AS iam_user,
+            {creator_case_sql}                                                  AS iam_user,
             SUM(line_item_usage_amount)                                         AS usage_hours,
             SUM(line_item_unblended_cost)                                       AS cost
         FROM {_ATHENA_DATABASE}.cur_logs
@@ -184,11 +187,7 @@ def collect_instance_cost_cur(athena, d1_date: date) -> dict:
           AND line_item_resource_id LIKE 'i-%'
           AND product_instance_type != ''
           AND line_item_usage_type  LIKE '%BoxUsage%'
-        GROUP BY
-            line_item_resource_id,
-            product_instance_type,
-            COALESCE(NULLIF(product_region_code, ''), 'global'),
-            SPLIT_PART(COALESCE(resource_tags_aws_created_by, ''), ':', 3)
+        GROUP BY 1, 2, 3, 4
         HAVING SUM(line_item_unblended_cost) > 0
     """
     rows   = _run_query(athena, sql)

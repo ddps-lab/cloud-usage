@@ -34,6 +34,7 @@ import logging
 
 from .data import fetch_cost_forecast  # Q8: CE API 재사용
 from .owner_resolver import get_owner_maps
+from .cur_schema import add_columns_ddl, find_missing_tag_columns
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +207,23 @@ def _load_available_tag_columns(athena) -> set[str]:
           AND column_name LIKE 'resource_tags_%'
     """
     rows = _run_query(athena, sql)
-    _AVAILABLE_TAG_COLUMNS = {r['column_name'] for r in rows if r.get('column_name')}
+    available = {r['column_name'] for r in rows if r.get('column_name')}
+
+    # 새로 활성화된 cost allocation tag 는 Parquet 에만 생기고 테이블에는 안 생긴다.
+    # 그대로 두면 그 태그를 쓰는 룰이 조용히 빠지므로, manifest 와 비교해 추가한다.
+    # 상세는 cur_schema.py 참조.
+    missing = find_missing_tag_columns(
+        _ATHENA_DATABASE, 'cur_logs', available, _ATHENA_REGION)
+    if missing:
+        try:
+            _run_query(athena, add_columns_ddl(_ATHENA_DATABASE, 'cur_logs', missing))
+            available |= set(missing)
+            log.warning("cur_logs 에 없던 태그 컬럼 %d개 추가: %s", len(missing), missing)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("cur_logs 태그 컬럼 추가 실패 → 이 컬럼을 쓰는 룰은 빠진다 %s: %s",
+                        missing, e)
+
+    _AVAILABLE_TAG_COLUMNS = available
     log.info("CUR resource_tags 컬럼 %d개 감지", len(_AVAILABLE_TAG_COLUMNS))
     return _AVAILABLE_TAG_COLUMNS
 
@@ -355,6 +372,8 @@ def _run_query(athena, sql: str) -> list:
         result = athena.get_query_results(**kwargs)
         page   = result['ResultSet']['Rows']
         if headers is None:
+            if not page:                              # DDL 은 결과 행이 없다
+                break
             headers = [c.get('VarCharValue', '') for c in page[0]['Data']]
             page    = page[1:]
         for row in page:

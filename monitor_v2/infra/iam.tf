@@ -101,6 +101,18 @@ resource "aws_iam_policy" "monitor_v2" {
         ]
         Resource = "*"
       },
+      # cost/cur_schema.py: 새로 활성화된 cost allocation tag 컬럼을
+      # cur_logs 에 ALTER TABLE ADD COLUMNS 로 추가 (crawler 가 없어서)
+      {
+        Sid    = "GlueCurLogsAddColumns"
+        Effect = "Allow"
+        Action = ["glue:UpdateTable"]
+        Resource = [
+          "arn:aws:glue:${var.athena_region}:*:catalog",
+          "arn:aws:glue:${var.athena_region}:*:database/${var.athena_database}",
+          "arn:aws:glue:${var.athena_region}:*:table/${var.athena_database}/cur_logs",
+        ]
+      },
       # ── S3 (──────────────────────
       # Athena 쿼리 결과를 ATHENA_OUTPUT_LOCATION에 쓰고 읽는 권한
       # CUR 원본 파일이 저장된 버킷 읽기 권한
