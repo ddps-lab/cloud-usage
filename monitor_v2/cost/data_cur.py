@@ -33,6 +33,7 @@ from datetime import date, timedelta
 import logging
 
 from .data import fetch_cost_forecast  # Q8: CE API 재사용
+from .owner_resolver import get_owner_maps
 
 log = logging.getLogger(__name__)
 
@@ -50,18 +51,34 @@ _MAX_WAIT      = 120   # seconds
 #
 # 우선순위:
 #   0. 공통 서비스 예외   → '[공통] Data Transfer / Cost Explorer / Support'
-#   1. aws:createdBy      → IAM User name
-#   2. lambda:createdBy   → '[Lambda] <value>'
-#   3. Requester/Username → '[Requester] / [User] <value>'
-#   4. Project*           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
-#   5. EKS                → '[EKS] <cluster>[/<nodegroup>]'
-#   6. Elastic Beanstalk  → '[EB] <value>'
-#   7. AWS 자동 관리       → '[MGN] / [SageMaker] managed-resource'
-#   8. Service / Group    → '[Service] / [Group] <value>'
-#   9. Env / STAGE / Deploy → '[Env] / [Deploy] <value>'
-#  10. Name / NAME        → SPLIT_PART(value, '-', 1)  # 첫 토큰만
-#  11. usage_type fallback (Usage 라인만)
-#  12. 기타
+#   1. Owner / Engineer   → 값 그대로 (명시적 소유자 선언)
+#   2. aws:createdBy      → IAM User name  ※ IAMUser/Root 일 때만 (아래 주의 참고)
+#   3. 클러스터/ASG 매핑   → 생성 IAM User  (owner_resolver, CloudTrail 기반)
+#   4. lambda:createdBy   → '[Lambda] <value>'
+#   5. Requester/Username → '[Requester] / [User] <value>'
+#   6. Project*           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+#   7. EKS                → '[EKS] <cluster>[/<nodegroup>]'
+#   8. Elastic Beanstalk  → '[EB] <value>'
+#   9. AWS 자동 관리       → '[MGN] / [SageMaker] managed-resource'
+#  10. Service / Group    → '[Service] / [Group] <value>'
+#  11. Env / STAGE / Deploy → '[Env] / [Deploy] <value>'
+#  12. Name / NAME        → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+#  13. usage_type fallback (Usage 라인만)
+#  14. 기타
+#
+# ⚠ aws:createdBy 는 <principal-type>:<unique-id>:<friendly-name> 형식이고,
+#   3번째 필드의 의미가 principal-type 에 따라 다르다.
+#     IAMUser:AIDA...:mhsong          → 'mhsong'      (사람)
+#     AssumedRole:AROA...:AutoScaling → 'AutoScaling' (역할 세션명 — 사람이 아님)
+#   ASG/ELB 서비스 연결 역할이나 EKS 파드 세션이 사용자 이름 자리에 올라오는 것을
+#   막기 위해 사람 판정은 principal-type = IAMUser/Root 로 한정한다. 걸러진 행은
+#   태그 체인에서도 잡히지 않으면 12번 fallback('<service> - <usage_type>') 으로
+#   내려간다 — 사람이 아닌 비용은 사용자 목록이 아니라 서비스명으로 표시된다.
+#
+# 3번(클러스터/ASG 매핑)은 연구자가 태그를 붙이는 협조 없이도 IAM User 단위
+# 귀속이 되게 하기 위한 경로다. AWS 가 자동 부착하는 aws:eks:cluster-name /
+# aws:autoscaling:groupName 을 CloudTrail 의 생성자 정보와 조인한다.
+# 상세는 owner_resolver.py 참조. 매핑이 없으면 4번 이후 체인으로 내려간다.
 #
 # CUR 은 그 계정 리소스가 한 번이라도 그 태그 키를 사용했을 때만 해당
 # resource_tags_* 컬럼을 생성한다. 따라서 계정별 cur_logs 스키마가 다름.
@@ -87,12 +104,40 @@ _CREATOR_CASE_SUFFIX = """
 # EKS 는 cluster 필수 + nodegroup 옵셔널 구조라 별도 처리. 마커로 위치만 보존.
 _EKS_RULE = '__EKS__'
 
+# CloudTrail 기반 '클러스터/ASG → IAM User' 매핑도 런타임에 조립하므로 마커 사용.
+_OWNER_MAP_RULE = '__OWNER_MAP__'
+
 # 순서대로 평가되는 동적 룰: (필수 컬럼, WHEN-THEN SQL).
 # 컬럼이 cur_logs 에 존재할 때만 해당 절을 포함한다. 기존 우선순위 유지.
 _CREATOR_RULES_ORDERED: list[tuple[str, str]] = [
+    # ── 사람 식별 (IAM User 단위 귀속) ───────────────────────────
+    # Owner / owner / Engineer: 명시적 소유자 선언이라 aws:createdBy 보다 우선.
+    # ※ CUR 컬럼명은 태그 키를 소문자화하므로 'Owner' 와 'owner' 가 같은
+    #   resource_tags_user_owner 로 수렴할 수 있다. 컬럼이 나뉘어 생성되면
+    #   그 컬럼명으로 룰을 하나 더 추가하면 된다 (없는 컬럼은 자동 skip).
+    ("resource_tags_user_owner",
+     "WHEN NULLIF(resource_tags_user_owner, '') IS NOT NULL\n"
+     "            THEN resource_tags_user_owner"),
+    ("resource_tags_user_engineer",
+     "WHEN NULLIF(resource_tags_user_engineer, '') IS NOT NULL\n"
+     "            THEN resource_tags_user_engineer"),
+    # aws:createdBy 는 principal-type 이 사람일 때만 이름으로 사용한다.
+    # AssumedRole 세션명(AutoScaling, default.*-pod-*, aws-go-sdk-* 등)은
+    # 사람이 아니므로 여기서 걸러내고, 아래 태그 체인에서도 잡히지 않으면
+    # 최종 fallback('<service> - <usage_type>') 으로 내려간다.
     ("resource_tags_aws_created_by",
      "WHEN NULLIF(resource_tags_aws_created_by, '') IS NOT NULL\n"
+     "            AND SPLIT_PART(resource_tags_aws_created_by, ':', 1)\n"
+     "                IN ('IAMUser', 'Root')\n"
      "            THEN SPLIT_PART(resource_tags_aws_created_by, ':', 3)"),
+
+    # ── 자동 귀속: 클러스터 / ASG → 생성 IAM User ────────────────
+    # AWS 가 사람 개입 없이 자동 부착하는 태그(aws:eks:cluster-name,
+    # aws:autoscaling:groupName)를 CloudTrail 생성자 매핑과 조인한다.
+    # 아래 태그 체인(Project/Name 등)보다 우선이라, 예컨대 pacsrun 클러스터
+    # 비용은 'PACSrun'(Project 태그) 대신 실제 생성자 'jglee' 로 표시된다.
+    (_OWNER_MAP_RULE, ""),
+
     ("resource_tags_user_lambda_created_by",
      "WHEN NULLIF(resource_tags_user_lambda_created_by, '') IS NOT NULL\n"
      "            THEN CONCAT('[Lambda] ', resource_tags_user_lambda_created_by)"),
@@ -189,6 +234,59 @@ def _eks_clause(available: set[str]) -> str | None:
     )
 
 
+def _sql_literal(text) -> str:
+    """SQL 문자열 리터럴로 안전하게 인용 (single quote 이스케이프)."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def _mapping_clause(column: str, mapping: dict) -> str | None:
+    """
+    {태그값: IAM User} 매핑을 'IN 가드 + CASE' WHEN 절로 변환.
+
+    예:
+        WHEN resource_tags_aws_eks_cluster_name IN ('Theseus', 'pacsrun')
+            THEN CASE resource_tags_aws_eks_cluster_name
+                     WHEN 'Theseus' THEN 'swjeong'
+                     WHEN 'pacsrun' THEN 'jglee'
+                 END
+    """
+    items = [(k, v) for k, v in sorted(mapping.items()) if k and v]
+    if not items:
+        return None
+    in_list = ", ".join(_sql_literal(k) for k, _ in items)
+    whens = "\n".join(
+        f"                     WHEN {_sql_literal(k)} THEN {_sql_literal(v)}"
+        for k, v in items
+    )
+    return (
+        f"WHEN {column} IN ({in_list})\n"
+        f"            THEN CASE {column}\n"
+        f"{whens}\n"
+        f"                 END"
+    )
+
+
+def _owner_map_clauses(available: set[str]) -> list:
+    """
+    CloudTrail 로 만든 클러스터/ASG 소유자 매핑을 WHEN 절 리스트로 반환.
+
+    매핑이 비어 있거나 해당 컬럼이 CUR 에 없으면 빈 리스트 → CASE 에서 생략.
+    owner_resolver 는 실패 시 빈 매핑을 주므로 리포트를 막지 않는다.
+    """
+    clusters, asgs = get_owner_maps()
+    clauses: list[str] = []
+    for column, mapping in (
+        ('resource_tags_aws_eks_cluster_name',       clusters),
+        ('resource_tags_aws_autoscaling_group_name', asgs),
+    ):
+        if column not in available or not mapping:
+            continue
+        clause = _mapping_clause(column, mapping)
+        if clause:
+            clauses.append(clause)
+    return clauses
+
+
 def _build_creator_case_sql(athena) -> str:
     """계정에 존재하는 resource_tags_* 컬럼만 사용하는 CASE WHEN SQL 을 조립."""
     available = _load_available_tag_columns(athena)
@@ -198,6 +296,8 @@ def _build_creator_case_sql(athena) -> str:
             clause = _eks_clause(available)
             if clause:
                 middle.append(clause)
+        elif col == _OWNER_MAP_RULE:
+            middle.extend(_owner_map_clauses(available))
         elif col in available:
             middle.append(when_then)
     middle_sql = "".join("        " + c + "\n" for c in middle)
@@ -314,18 +414,27 @@ def fetch_daily_by_service_and_creator_cur(athena, d1_date: date) -> dict:
 
     Fallback 우선순위 (위에서 아래):
         0. 공통 서비스 예외       → '[공통] Data Transfer / Cost Explorer / Support'
-        1. aws:createdBy          → IAM User name
-        2. lambda:createdBy       → '[Lambda] <value>'
-        3. Requester / Username   → '[Requester] / [User] <value>'
-        4. Project / ProjectName  → SPLIT_PART(value, '-', 1)  # 첫 토큰만
-        5. eks:cluster-name(+nodegroup) → '[EKS] <cluster>/<nodegroup>'
-        6. elasticbeanstalk:env-name/id → '[EB] <value>'
-        7. AWS 자동 관리 (MGN, SageMaker) → '[MGN] / [SageMaker] managed-resource'
-        8. Service / Group        → '[Service] / [Group] <value>'
-        9. Environment / STAGE / Deploy → '[Env] / [Deploy] <value>'
-        10. Name / NAME           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
-        11. usage_type            → '<service> - <usage_type>'
-        12. 그 외                 → '<service> - 기타'
+        1. Owner / Engineer       → 값 그대로 (명시적 소유자)
+        2. aws:createdBy          → IAM User name
+                                    ※ principal-type 이 IAMUser/Root 인 경우만.
+        3. 클러스터 / ASG 매핑     → 생성 IAM User
+                                    aws:eks:cluster-name / aws:autoscaling:groupName
+                                    을 CloudTrail 생성자와 조인 (owner_resolver)
+        4. lambda:createdBy       → '[Lambda] <value>'
+        5. Requester / Username   → '[Requester] / [User] <value>'
+        6. Project / ProjectName  → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+        7. eks:cluster-name(+nodegroup) → '[EKS] <cluster>/<nodegroup>'
+        8. elasticbeanstalk:env-name/id → '[EB] <value>'
+        9. AWS 자동 관리 (MGN, SageMaker) → '[MGN] / [SageMaker] managed-resource'
+        10. Service / Group       → '[Service] / [Group] <value>'
+        11. Environment / STAGE / Deploy → '[Env] / [Deploy] <value>'
+        12. Name / NAME           → SPLIT_PART(value, '-', 1)  # 첫 토큰만
+        13. usage_type            → '<service> - <usage_type>'
+        14. 그 외                 → '<service> - 기타'
+
+        ※ AssumedRole 세션(AutoScaling / ElasticLoadBalancing / default.*-pod-* /
+          aws-go-sdk-* 등)은 2번에서 걸러진다. 3번 매핑에 걸리면 사람 이름이
+          나오고, 걸리지 않으면 13번으로 내려가 서비스명으로 표시된다.
 
     NOTE: IAM User별 비용에 Tax 포함 계산 (Usage × 1.10)
 

@@ -206,6 +206,10 @@ def send_main4_report(usage: dict, report_date: date = None) -> None:
 
     스레드는 본문이 성공했을 때만 보낸다. 본문 없이 스레드만 뜨면 채널에 맥락 없는
     표가 세 장 남는다.
+
+    ★ vendor 가 실제로 청구한 금액은 여기 없다. Main 5(`vendor/report.py`)가 따로
+    보낸다 — 세는 대상이 다르고(여기는 hyperun 이 낸 job 만, 저기는 계정 전체),
+    출처도 다르다(여기는 gateway, 저기는 vendor 의 청구 API).
     """
     today = report_date or datetime.now(timezone.utc).date()
 

@@ -47,11 +47,18 @@ def lambda_handler(event, context):
         'ec2'      → Main 2 (EC2 상세)
         'all'      → Main 1 + Main 2  (KST 22:05 트리거)
         'analysis' → Main 3 (비용 변화 AI 분석)  (KST 08:15 트리거)
-        'hyperun'  → Main 4 (hyperun 으로 낸 job 의 team/user/vendor 별 비용)
+        'hyperun'  → Main 4 (hyperun 으로 낸 job 의 team/user/vendor 별 비용, 추정)
+        'vendor'   → Main 5 (RunPod / Shadeform 이 실제로 청구한 금액)
 
-    ★ 'hyperun' 은 AWS 를 전혀 안 본다. 숫자는 hyperun gateway 의 GET /v1/usage 가
-    PacsJob 에서 뽑아 준다. 다른 vendor(RunPod, Shadeform, GCP)의 지출은 AWS CUR
-    에 한 줄도 안 남으므로 Main 1 의 Athena 경로로는 애초에 보이지 않는다.
+    ★ 뒤의 둘은 AWS 를 전혀 안 본다. 다른 vendor(RunPod, Shadeform, GCP)의 지출은
+    AWS CUR 에 한 줄도 안 남으므로 Main 1 의 Athena 경로로는 애초에 보이지 않는다.
+
+    ★★ 그 둘이 세는 대상과 출처가 다르다. Main 4 는 hyperun gateway 의
+    GET /v1/usage 하나를 부르고, 숫자는 **PacsJob 만** 센 카탈로그 단가 x 시간의
+    추정이다. Main 5 는 RunPod 의 GraphQL 과 Shadeform 의 REST 를 직접 불러
+    **계정 전체**의 실제 청구를 받는다. 그래서 둘을 한 메시지로 묶지 않았다 —
+    gateway 가 답하지 않는 날에도 청구 숫자는 나가야 하고, 스레드로 붙어 있으면
+    본문이 없는 순간 같이 사라진다.
 
     date_mode 동작:
         'today'     → today_kst = 오늘     → d1_date = 오늘  (KST 22:00, CUR 당일 반영 후)
@@ -128,6 +135,42 @@ def lambda_handler(event, context):
         except Exception as e:
             slack.post_error(
                 context='hyperun_report',
+                error=e,
+                meta={**base_meta, 'date': str(today_kst)},
+            )
+            return 500
+
+    # ── Main 5: vendor 가 실제로 청구한 금액 (독립 실행) ──────────
+    #
+    # Main 4 와 마찬가지로 AWS 를 안 보므로 아래의 sts / region 초기화보다 앞에 있다.
+    # 다른 점은 출처다 — gateway 가 아니라 RunPod 의 GraphQL 과 Shadeform 의 REST 를
+    # 직접 부른다. 그래서 gateway 가 죽은 날에도 이 보고서는 나간다.
+    #
+    # ★ 설정이 없으면 조용히 건너뛴다. RUNPOD_API_KEY 와 SHADEFORM_API_KEY 가 둘 다
+    # 없는 것은 "아직 안 켰다" 이지 고장이 아니고, 그때마다 에러를 올리면 진짜 고장이
+    # 났을 때 아무도 안 본다. 로그에는 남는다.
+    if report_type == 'vendor':
+        try:
+            from .vendor.data import collect as collect_billing, BillingUnavailable
+            from .vendor.report import send_main5_report
+        except ImportError as e:
+            slack.post_error(context='vendor_import', error=e, meta=base_meta)
+            return 500
+        try:
+            billing = collect_billing()
+        except BillingUnavailable as e:
+            log.warning('vendor 청구를 못 받았다: %s', e)
+            return 200
+        except Exception as e:
+            slack.post_error(context='vendor_collect', error=e, meta=base_meta)
+            return 500
+
+        try:
+            send_main5_report(billing, today_kst)
+            return 200
+        except Exception as e:
+            slack.post_error(
+                context='vendor_report',
                 error=e,
                 meta={**base_meta, 'date': str(today_kst)},
             )
