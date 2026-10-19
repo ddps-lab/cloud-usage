@@ -1,6 +1,6 @@
 import boto3
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from .cost.data_cur import collect_all as collect_cost_data
 from .cost.data     import collect_all as collect_cost_data_ce
@@ -39,6 +39,7 @@ def lambda_handler(event, context):
         event: {
             'report_type': 'cost' | 'ec2' | 'all' | 'analysis'  (기본값: 'all'),
             'date_mode':   'today' | 'yesterday'                 (기본값: 'today'),
+            'date':        'YYYY-MM-DD'  (선택. 주면 date_mode 대신 이 날짜로 재발송)
         }
         context: Lambda context 객체
 
@@ -86,7 +87,10 @@ def lambda_handler(event, context):
     # ── 날짜 산정 ─────────────────────────────────────────────────
     try:
         today_kst = datetime.now(KST).date()
-        if date_mode == 'yesterday':
+        if event.get('date'):
+            # 수동 재발송용: 'YYYY-MM-DD' 를 주면 date_mode 대신 그 날짜로 리포트한다.
+            today_kst = date.fromisoformat(event['date'])
+        elif date_mode == 'yesterday':
             today_kst = today_kst - timedelta(days=1)
     except Exception as e:
         slack.post_error(context='init/date', error=e, meta=base_meta)
