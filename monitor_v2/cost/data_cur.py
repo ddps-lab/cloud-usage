@@ -44,7 +44,12 @@ _ATHENA_WORKGROUP       = os.environ.get('ATHENA_WORKGROUP', 'primary')
 _ATHENA_REGION          = os.environ.get('ATHENA_REGION', 'ap-northeast-2')
 
 _POLL_INTERVAL = 1.5   # seconds
-_MAX_WAIT      = 120   # seconds
+_MAX_WAIT      = 120   # seconds, 시도 1회당 대기 상한 (평소 쿼리는 1~2초)
+_MAX_ATTEMPTS  = 3     # 타임아웃 / Athena 내부 오류 시 재제출 횟수 포함 총 시도
+
+# AthenaError.ErrorCategory: 1=SYSTEM, 2=USER, 3=OTHER
+# SYSTEM 오류는 Retryable=false 로 와도 "다시 제출하라" 는 안내가 붙어 오므로 재시도한다.
+_ATHENA_ERROR_CATEGORY_SYSTEM = 1
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +335,34 @@ def _run_query(athena, sql: str) -> list:
     Athena 쿼리를 실행하고 결과를 dict 리스트로 반환한다.
     헤더 행(첫 번째 row) 은 제외한다.
 
+    타임아웃 또는 Athena 내부(SYSTEM) 오류면 쿼리를 새로 제출해 최대
+    _MAX_ATTEMPTS 회까지 시도한다. 타임아웃난 쿼리는 stop 해서 남겨두지 않는다.
+
     Returns:
         [{'col': 'val', ...}, ...]
     """
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            exec_id = _start_and_wait(athena, sql)
+            break
+        except _RetryableAthenaError as e:
+            if attempt == _MAX_ATTEMPTS:
+                raise e.original
+            log.warning("Athena 쿼리 재시도 (%d/%d): %s",
+                        attempt, _MAX_ATTEMPTS, e.original)
+
+    return _fetch_results(athena, exec_id)
+
+
+class _RetryableAthenaError(Exception):
+    """재제출하면 성공할 수 있는 실패. original 은 마지막 시도에서 그대로 올린다."""
+    def __init__(self, original: Exception):
+        super().__init__(str(original))
+        self.original = original
+
+
+def _start_and_wait(athena, sql: str) -> str:
+    """쿼리를 제출하고 SUCCEEDED 까지 대기한 뒤 exec_id 를 반환한다."""
     start_kwargs = {
         'QueryString': sql,
         'QueryExecutionContext': {'Database': _ATHENA_DATABASE},
@@ -354,16 +384,33 @@ def _run_query(athena, sql: str) -> list:
         if state == 'SUCCEEDED':
             break
         if state in ('FAILED', 'CANCELLED'):
-            reason = status['QueryExecution']['Status'].get('StateChangeReason', '')
-            raise RuntimeError(
-                f"Athena 쿼리 실패 [{state}]: {reason}\nSQL 앞 200자: {sql[:200]}"
+            st     = status['QueryExecution']['Status']
+            reason = st.get('StateChangeReason', '')
+            err    = RuntimeError(
+                f"Athena 쿼리 실패 [{state}]: {reason}\n"
+                f"exec_id={exec_id}\nSQL 앞 200자: {sql[:200]}"
             )
+            athena_error = st.get('AthenaError', {})
+            if (athena_error.get('ErrorCategory') == _ATHENA_ERROR_CATEGORY_SYSTEM
+                    or athena_error.get('Retryable')):
+                raise _RetryableAthenaError(err)
+            raise err
         time.sleep(_POLL_INTERVAL)
         elapsed += _POLL_INTERVAL
     else:
-        raise TimeoutError(f"Athena 쿼리 타임아웃 ({_MAX_WAIT}s): exec_id={exec_id}")
+        # 멈춘 쿼리를 그대로 두면 Athena 쪽에서 계속 돈다 (2026-10-14: 437초 후 FAILED).
+        try:
+            athena.stop_query_execution(QueryExecutionId=exec_id)
+        except Exception as e:
+            log.warning("Athena 쿼리 stop 실패 (무시): exec_id=%s, %s", exec_id, e)
+        raise _RetryableAthenaError(
+            TimeoutError(f"Athena 쿼리 타임아웃 ({_MAX_WAIT}s): exec_id={exec_id}")
+        )
+    return exec_id
 
-    # 결과 수집 (페이지네이션)
+
+def _fetch_results(athena, exec_id: str) -> list:
+    """SUCCEEDED 된 쿼리 결과를 페이지네이션으로 모두 읽는다."""
     rows, headers, next_token = [], None, None
     while True:
         kwargs = {'QueryExecutionId': exec_id, 'MaxResults': 1000}

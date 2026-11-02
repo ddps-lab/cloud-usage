@@ -49,13 +49,14 @@ def _usage_type_rows(rows: list) -> list:
     ] or [["(데이터 없음)", "", "", "", ""]]
 
 
-def _resource_rows(rows: list) -> list:
+def _resource_rows(rows: list, data_source: str = 'CUR') -> list:
+    empty = "(Cost Explorer 는 리소스 단위 미제공)" if data_source == 'CE' else "(데이터 없음)"
     return [
         [r['service'], r['usage_type'], r['resource_id'],
          r.get('iam_user') or '-',
          f"${r['cost_d1']:,.2f}", f"${r['cost_d2']:,.2f}", _fmt_diff(r['diff'])]
         for r in rows
-    ] or [["(데이터 없음)", "", "", "", "", "", ""]]
+    ] or [[empty, "", "", "", "", "", ""]]
 
 
 def _split_summary(summary: str) -> tuple:
@@ -104,6 +105,8 @@ def _build_main3(analysis: dict) -> list:
     forecast_total    = analysis.get('forecast_total', 0.0)
     top_users_section = analysis.get('top_users_section', '')
     new_costs_section = analysis.get('new_costs_section', '')
+    data_source       = analysis.get('data_source', 'CUR')
+    fallback_reason   = analysis.get('fallback_reason')
 
     fields = [
         f"*어제({d1_date}) 총비용*\n`${d1_total:,.2f}`",
@@ -137,8 +140,19 @@ def _build_main3(analysis: dict) -> list:
     if new_costs_section:
         summary_blocks.append(_section(new_costs_section))
 
+    # CE 로 대체한 날은 CUR 과 무엇이 다른지 맨 위에 적는다. 생성자 / 리소스 표가
+    # 평소와 다르게 보이는 이유를 읽는 사람이 바로 알 수 있어야 한다.
+    fallback_blocks = []
+    if data_source == 'CE':
+        fallback_blocks = [_context(
+            f"⚠️ {fallback_reason or 'CUR 데이터 없음'} → Cost Explorer 값으로 대체했습니다, "
+            "aws:createdBy 기준이라 상세한 IAM User 구분은 되지 않을 수 있습니다."
+        )]
+    source_label = "Cost Explorer (CUR 대체)" if data_source == 'CE' else "CUR"
+
     return [
         _header(f"AWS 비용 변화 분석  |  {d1_date}  |  {ACCOUNT_NAME}"),
+        *fallback_blocks,
         _fields_section(fields),
         _divider(),
         *summary_blocks,
@@ -158,10 +172,10 @@ def _build_main3(analysis: dict) -> list:
         *_table_section(
             f"*[ 리소스 ID별 비용 변화 Top {len(resource_rows)} ]*",
             ["서비스", "타입", "리소스 ID", "생성자", "어제", "그제", "변화"],
-            _resource_rows(resource_rows),
+            _resource_rows(resource_rows, data_source),
         ),
         _context(
-            f"분석 기준: {d1_date}  |  데이터 소스: CUR  |  모델: {_BEDROCK_MODEL_ID}"
+            f"분석 기준: {d1_date}  |  데이터 소스: {source_label}  |  모델: {_BEDROCK_MODEL_ID}"
         ),
     ]
 

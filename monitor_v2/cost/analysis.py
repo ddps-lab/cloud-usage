@@ -1207,8 +1207,10 @@ def format_top_users_section_for_slack(top_users_mtd: list, mtd_total: float) ->
                 if d.get('count', 0) > 1 and _is_countable(d.get('usage_type', ''))
                 else ''
             )
+            # CE fallback 은 usage_type 축이 없어 usage_human 이 빈 문자열이다.
+            label = f"{short_svc} {usage_human}".rstrip()
             breakdown_parts.append(
-                f"{short_svc} {usage_human}{count_str} ${d['cost']:,.2f} (본인 비용의 {sub_share:.1f}%)"
+                f"{label}{count_str} ${d['cost']:,.2f} (본인 비용의 {sub_share:.1f}%)"
             )
 
         line = f"• {user} — ${user_cost:,.2f} (이번 달 누계의 {share:.1f}%)"
@@ -1557,35 +1559,43 @@ def collect_all(d1_date: date) -> dict:
             'forecast_total':    float,
             'summary':           str,
             'llm_error':         Exception | None,  # Bedrock 호출 실패 시 잡힌 예외
+            'data_source':       'CUR' | 'CE',
+            'fallback_reason':   str | None,        # CE 로 대체한 이유 (CUR 이면 None)
         }
     """
     d2_date = d1_date - timedelta(days=1)
     athena  = boto3.client('athena', region_name=_ATHENA_REGION)
     ce      = boto3.client('ce', region_name='us-east-1')
 
-    service_rows    = fetch_service_diff(athena, d1_date, d2_date)
-    usage_type_rows = fetch_usage_type_diff(athena, d1_date, d2_date)
-    resource_rows   = fetch_resource_diff(athena, d1_date, d2_date)
-    top_services    = fetch_top_services_with_breakdown(
-        athena, d1_date,
-        top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
-    )
-    new_costs       = fetch_month_new_costs(athena, d1_date)
-    service_mtd     = fetch_service_mtd_breakdown(athena, d1_date)        # Q16
-    top_users_mtd   = fetch_mtd_top_users_with_breakdown(                  # Q17
-        athena, d1_date,
-        top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
-    )
+    # CUR 에 d1 이 없거나 CUR 조회가 실패하면 Cost Explorer 로 대체한다 (Main 1 과 같은 규칙).
+    # 월초에는 새 달의 CUR 파일이 하루 넘게 늦게 와서, 대체하지 않으면 "어제 $0.00" 이 나간다.
+    cur_error, fallback_reason = None, None
+    try:
+        raw = _collect_raw_cur(athena, d1_date, d2_date)
+        if raw is None:
+            fallback_reason = f"CUR 에 {d1_date} 데이터가 아직 없음"
+    except Exception as e:
+        log.warning("CUR 조회 실패 → Cost Explorer fallback: %s", e)
+        cur_error, fallback_reason = e, f"CUR 조회 실패 ({type(e).__name__})"
 
-    # 어제/그제 총비용은 변화 Top N(Q9, service_rows)이 아니라 그날 비용이 발생한
-    # 모든 서비스를 합산해야 한다. service_rows 는 HAVING ABS(diff)>0.01 + LIMIT 으로
-    # "변화가 큰 서비스"만 추리므로, 변화가 거의 없는(매일 일정한) 서비스의 비용이
-    # 누락돼 실제 총비용보다 작게 잡힌다. → Main 1 (fetch_daily_by_service_cur)과 동일하게
-    # 전체 합산해 "어제 총비용" 값을 일치시킨다.
-    d1_total = sum(fetch_daily_by_service_cur(athena, d1_date).values())
-    d2_total = sum(fetch_daily_by_service_cur(athena, d2_date).values())
+    if fallback_reason:
+        from .analysis_ce import collect_raw_ce
+        log.warning("Main 3 Cost Explorer fallback (d1=%s): %s", d1_date, fallback_reason)
+        try:
+            raw = collect_raw_ce(ce, d1_date, _TOP_SERVICES_N, _TOP_BREAKDOWN_N)
+        except Exception as e:
+            raise e from cur_error
 
-    mtd_total        = fetch_mtd_total_cur(athena, d1_date)
+    service_rows    = raw['service_rows']
+    usage_type_rows = raw['usage_type_rows']
+    resource_rows   = raw['resource_rows']
+    top_services    = raw['top_services']
+    new_costs       = raw['new_costs']
+    service_mtd     = raw['service_mtd']
+    top_users_mtd   = raw['top_users_mtd']
+    d1_total        = raw['d1_total']
+    d2_total        = raw['d2_total']
+    mtd_total       = raw['mtd_total']
     mtd_days_elapsed = d1_date.day
 
     # CE Forecast = "오늘부터 월말까지" 예상. mtd_total + forecast = 월말 총 예상
@@ -1638,4 +1648,40 @@ def collect_all(d1_date: date) -> dict:
         'top_users_section': top_users_section,
         'new_costs_section': new_costs_section,
         'llm_error':         llm_error,
+        'data_source':       'CE' if fallback_reason else 'CUR',
+        'fallback_reason':   fallback_reason,
+    }
+
+
+def _collect_raw_cur(athena, d1_date: date, d2_date: date) -> dict | None:
+    """
+    collect_all 의 CUR 수집 단계 (Q9~Q17 + 총액).
+    d1 의 CUR 행이 하나도 없으면 나머지 쿼리를 돌리지 않고 None 을 반환한다.
+    """
+    # 어제/그제 총비용은 변화 Top N(Q9, service_rows)이 아니라 그날 비용이 발생한
+    # 모든 서비스를 합산해야 한다. service_rows 는 HAVING ABS(diff)>0.01 + LIMIT 으로
+    # "변화가 큰 서비스"만 추리므로, 변화가 거의 없는(매일 일정한) 서비스의 비용이
+    # 누락돼 실제 총비용보다 작게 잡힌다. → Main 1 (fetch_daily_by_service_cur)과 동일하게
+    # 전체 합산해 "어제 총비용" 값을 일치시킨다.
+    d1_by_service = fetch_daily_by_service_cur(athena, d1_date)
+    if not d1_by_service:
+        return None
+
+    return {
+        'd1_total':        sum(d1_by_service.values()),
+        'd2_total':        sum(fetch_daily_by_service_cur(athena, d2_date).values()),
+        'service_rows':    fetch_service_diff(athena, d1_date, d2_date),
+        'usage_type_rows': fetch_usage_type_diff(athena, d1_date, d2_date),
+        'resource_rows':   fetch_resource_diff(athena, d1_date, d2_date),
+        'top_services':    fetch_top_services_with_breakdown(
+            athena, d1_date,
+            top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
+        ),
+        'new_costs':       fetch_month_new_costs(athena, d1_date),
+        'service_mtd':     fetch_service_mtd_breakdown(athena, d1_date),        # Q16
+        'top_users_mtd':   fetch_mtd_top_users_with_breakdown(                  # Q17
+            athena, d1_date,
+            top_n=_TOP_SERVICES_N, breakdown_top=_TOP_BREAKDOWN_N,
+        ),
+        'mtd_total':       fetch_mtd_total_cur(athena, d1_date),
     }

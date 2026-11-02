@@ -16,19 +16,18 @@ KST = timezone(timedelta(hours=9))
 
 
 def _has_cost_data(cost_data: dict) -> bool:
-    """CUR 조회 결과에 의미있는 비용 데이터가 있는지 판단.
+    """CUR 조회 결과에 리포트 기준일(d1) 의 비용이 있는지 판단.
 
-    daily_d1 / daily_d2 가 모두 비어 있고 MTD 총액도 0이면 (해당 월 CUR 미적재 등)
-    '데이터 없음'으로 보고 CE fallback 대상이 된다. 예외는 아니지만 빈 결과인
-    경우(예: 6월분 CUR 미적재)를 잡아내기 위한 판정.
+    daily_d1 이 비어 있으면 (해당 월 CUR 미적재 등) '데이터 없음'으로 보고 CE fallback
+    대상이 된다. 예외는 아니지만 빈 결과인 경우(예: 6월분 CUR 미적재)를 잡아내기 위한 판정.
+
+    d2 / MTD 는 보지 않는다. 월초에는 새 달의 CUR 파일이 하루 넘게 늦게 오는데, 그동안
+    전월 파일에 d2(전월 말일) 일부가 들어 있어서 d2 까지 보면 "데이터 있음" 으로 판정되고
+    d1 이 $0.00 으로 나간다 (2026-11-01 리포트).
     """
     if not cost_data:
         return False
-    return bool(
-        cost_data.get('daily_d1')
-        or cost_data.get('daily_d2')
-        or (cost_data.get('mtd_this') or 0) > 0
-    )
+    return bool(cost_data.get('daily_d1'))
 
 
 def lambda_handler(event, context):
