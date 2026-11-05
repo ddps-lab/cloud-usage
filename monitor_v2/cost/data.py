@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta, timezone
 from calendar import monthrange
 import logging
 
+from ..slack import alert
+
 log = logging.getLogger(__name__)
 
 
@@ -217,6 +219,8 @@ def fetch_cost_forecast(ce) -> float:
         return float(resp.get('Total', {}).get('Amount', '0'))
     except Exception as exc:
         log.warning("get_cost_forecast 실패 (무시): %s", exc)
+        alert.notify('Cost Explorer GetCostForecast', exc,
+                     handling='이달 예상 비용을 이번 달 일평균 × 남은 일수로 산정했습니다.')
         return 0.0
 
 

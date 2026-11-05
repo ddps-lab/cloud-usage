@@ -15,6 +15,12 @@ variable "slack_channel_id" {
   type        = string
 }
 
+variable "alert_channel_id" {
+  description = "Lambda 에러 알림을 보낼 Slack 채널 ID (system-monitoring). 빈 문자열이면 보내지 않는다."
+  type        = string
+  default     = "C03SA7X721X"
+}
+
 variable "account_name" {
   description = "리포트 헤더에 표시할 AWS 계정 별칭 (e.g., hyu-ddps)"
   type        = string

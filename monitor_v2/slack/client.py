@@ -131,17 +131,27 @@ def post_error(context: str, error: Exception, meta: dict = None) -> None:
     tb_tail  = '\n'.join(tb_text.splitlines()[-10:])[:2500]
 
     fields = [f"*단계*\n`{context}`", f"*에러 타입*\n`{error_type}`"]
+    # report_type 은 내부 이벤트 값이라 표시하지 않는다. 나머지 키는 한국어 이름으로 보인다.
+    labels = {'date': '기준일', 'account_id': '계정 ID'}
     for k, v in (meta or {}).items():
-        fields.append(f"*{k}*\n`{v}`")
+        if k == 'report_type' or not v:
+            continue
+        fields.append(f"*{labels.get(k, k)}*\n`{v}`")
 
     blocks = [
-        _header(f"🚨 Daily Report 오류  |  {ACCOUNT_NAME}"),
+        _header(f"🚨 Daily Report Failed | {ACCOUNT_NAME}"),
         _fields_section(fields),
         _section(f"*에러 메시지*\n```{error_msg}```"),
         _section(f"*Traceback (last 10 lines)*\n```{tb_tail}```"),
     ]
 
     fallback = f"[{ACCOUNT_NAME}] Daily Report {context} 오류: {error_type}: {error_msg[:200]}"
+
+    # 같은 에러를 운영 알림 채널(system-monitoring)에도 보낸다. 이 단계의 리포트는 나가지 않았다.
+    from . import alert
+    alert.notify(alert.stage_label(context), error, status='FAILED',
+                 handling='해당 단계가 중단되어 리포트를 발송하지 못했습니다.', meta=meta)
+
     try:
         post_blocks(blocks, fallback_text=fallback)
     except Exception:

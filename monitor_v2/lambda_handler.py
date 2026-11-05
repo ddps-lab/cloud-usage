@@ -9,6 +9,7 @@ from .cost.report_cur      import send_cur_report
 from .ec2.report_cur       import send_ec2_cur_report
 from .cost.report_analysis import send_main3_report
 from .slack import client as slack
+from .slack import alert
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ def lambda_handler(event, context):
         200 (전 단계 성공) / 500 (한 단계라도 실패)
     """
     event = event or {}
+    alert.set_invocation(context, event)
     report_type = event.get('report_type', 'all')
     date_mode   = event.get('date_mode', 'today')
 
@@ -216,6 +218,9 @@ def lambda_handler(event, context):
             cost_data = None
     except Exception as cur_err:
         log.warning("CUR 조회 실패 → Cost Explorer fallback: %s", cur_err)
+        alert.notify('Athena CUR 조회', cur_err,
+                     handling='Cost Explorer 데이터로 대체하여 리포트를 작성했습니다.',
+                     meta={'date': str(today_kst)})
 
     if cost_data is None:
         try:

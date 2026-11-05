@@ -40,6 +40,7 @@ from .data_cur import (
     fetch_daily_by_service_cur,
     _build_creator_case_sql,
 )
+from ..slack import alert
 from .data import fetch_forecast_or_estimate
 
 log = logging.getLogger(__name__)
@@ -1577,6 +1578,9 @@ def collect_all(d1_date: date) -> dict:
             fallback_reason = f"CUR 에 {d1_date} 데이터가 아직 없음"
     except Exception as e:
         log.warning("CUR 조회 실패 → Cost Explorer fallback: %s", e)
+        alert.notify('Athena CUR 조회', e,
+                     handling='Cost Explorer 데이터로 대체하여 리포트를 작성했습니다.',
+                     meta={'date': str(d1_date)})
         cur_error, fallback_reason = e, f"CUR 조회 실패 ({type(e).__name__})"
 
     if fallback_reason:
@@ -1605,6 +1609,8 @@ def collect_all(d1_date: date) -> dict:
         forecast, forecast_source = fetch_forecast_or_estimate(ce, mtd_total, d1_date)
     except Exception as exc:
         log.warning("CE forecast 실패 (무시): %s", exc)
+        alert.notify('이달 예상 비용 산정', exc,
+                     handling='이달 예상 비용을 제외하고 리포트를 작성했습니다.')
         forecast, forecast_source = 0.0, None
     forecast_total = mtd_total + forecast if forecast > 0 else 0.0
 

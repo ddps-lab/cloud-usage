@@ -32,6 +32,7 @@ import boto3
 from datetime import date, timedelta
 import logging
 
+from ..slack import alert
 from .data import fetch_forecast_or_estimate  # Q8: CE API 재사용, 실패하면 자체 추정
 from .owner_resolver import get_owner_maps
 from .cur_schema import add_columns_ddl, find_missing_tag_columns
@@ -227,6 +228,8 @@ def _load_available_tag_columns(athena) -> set[str]:
         except Exception as e:                        # noqa: BLE001
             log.warning("cur_logs 태그 컬럼 추가 실패 → 이 컬럼을 쓰는 룰은 빠진다 %s: %s",
                         missing, e)
+            alert.notify('Athena ALTER TABLE cur_logs ADD COLUMNS', e,
+                         handling=f"태그 컬럼 {', '.join(missing)}을 사용하는 소유자 판별 규칙을 제외하고 집계했습니다.")
 
     _AVAILABLE_TAG_COLUMNS = available
     log.info("CUR resource_tags 컬럼 %d개 감지", len(_AVAILABLE_TAG_COLUMNS))
@@ -403,6 +406,8 @@ def _start_and_wait(athena, sql: str) -> str:
             athena.stop_query_execution(QueryExecutionId=exec_id)
         except Exception as e:
             log.warning("Athena 쿼리 stop 실패 (무시): exec_id=%s, %s", exec_id, e)
+            alert.notify('Athena StopQueryExecution', e,
+                         handling=f"시간이 초과된 쿼리({exec_id})를 중지하지 못한 상태로 재시도했습니다.")
         raise _RetryableAthenaError(
             TimeoutError(f"Athena 쿼리 타임아웃 ({_MAX_WAIT}s): exec_id={exec_id}")
         )

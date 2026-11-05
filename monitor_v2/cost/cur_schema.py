@@ -41,6 +41,8 @@ from datetime import date
 
 import boto3
 
+from ..slack import alert
+
 log = logging.getLogger(__name__)
 
 _LOOKBACK_MONTHS = 3          # ec2/data_cur 의 creators 조회 윈도우와 같다
@@ -114,6 +116,8 @@ def find_missing_tag_columns(database: str, table: str,
         bucket, keys = _manifest_keys(location, today)
     except Exception as e:                            # noqa: BLE001
         log.warning("CUR 스키마 점검 실패 (테이블 조회): %s", e)
+        alert.notify('Glue GetTable (CUR 스키마 점검)', e,
+                     handling='신규 태그 컬럼 점검을 생략하고 집계했습니다.')
         return []
 
     s3 = boto3.client('s3')
@@ -125,6 +129,8 @@ def find_missing_tag_columns(database: str, table: str,
             continue                                  # 아직 없는 달
         except Exception as e:                        # noqa: BLE001
             log.warning("CUR manifest 읽기 실패 s3://%s/%s: %s", bucket, key, e)
+            alert.notify('S3 GetObject (CUR manifest)', e,
+                         handling=f"해당 manifest(s3://{bucket}/{key})를 제외하고 태그 컬럼을 점검했습니다.")
 
     return sorted(in_manifest - set(available))
 

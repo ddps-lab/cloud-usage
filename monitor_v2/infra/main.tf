@@ -94,6 +94,7 @@ resource "aws_lambda_function" "monitor_v2" {
     variables = merge({
       SLACK_BOT_TOKEN        = var.slack_bot_token
       SLACK_CHANNEL_ID       = var.slack_channel_id
+      ALERT_CHANNEL_ID       = var.alert_channel_id
       ACCOUNT_NAME           = var.account_name
       ATHENA_OUTPUT_LOCATION = var.athena_output_location
       ATHENA_DATABASE        = var.athena_database
