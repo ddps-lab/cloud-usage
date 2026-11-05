@@ -26,6 +26,7 @@ os.environ.setdefault('SLACK_BOT_TOKEN', 'not-a-real-token')
 os.environ.setdefault('SLACK_CHANNEL_ID', 'C000000000')
 
 from monitor_v2.cost import analysis, analysis_ce  # noqa: E402
+from monitor_v2.cost import data as cost_data  # noqa: E402
 from monitor_v2.cost.report_analysis import _build_main3
 
 D1 = date(2026, 11, 1)
@@ -133,7 +134,7 @@ def no_aws(monkeypatch):
     """boto3 / forecast / Bedrock 을 끊고, CE 수집이 불렸는지 기록한다."""
     called = []
     monkeypatch.setattr(analysis.boto3, 'client', lambda *a, **k: object())
-    monkeypatch.setattr(analysis, 'fetch_cost_forecast', lambda ce: 0.0)
+    monkeypatch.setattr(cost_data, 'fetch_cost_forecast', lambda ce: 0.0)
     monkeypatch.setattr(analysis, 'summarize', lambda **k: '요약')
     monkeypatch.setattr(analysis_ce, 'collect_raw_ce',
                         lambda *a: called.append(a) or dict(_CE_RAW))

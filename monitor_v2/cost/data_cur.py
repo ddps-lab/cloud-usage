@@ -32,7 +32,7 @@ import boto3
 from datetime import date, timedelta
 import logging
 
-from .data import fetch_cost_forecast  # Q8: CE API 재사용
+from .data import fetch_forecast_or_estimate  # Q8: CE API 재사용, 실패하면 자체 추정
 from .owner_resolver import get_owner_maps
 from .cur_schema import add_columns_ddl, find_missing_tag_columns
 
@@ -709,7 +709,8 @@ def collect_all(today_kst: date) -> dict:
             'by_region':      dict,   # {service: {region: float}}
             'by_region_mtd':  dict,   # {service: {region: float}}
             'mtd_this':       float,
-            'forecast':       float,  # CE API (0.0 = 예측 불가)
+            'forecast':       float,  # CE API, 실패하면 자체 추정 (0.0 = 예측 불가)
+            'forecast_source': 'CE' | 'ESTIMATE' | None,
         }
     """
     athena = boto3.client('athena', region_name=_ATHENA_REGION)
@@ -718,14 +719,18 @@ def collect_all(today_kst: date) -> dict:
     d1_date = today_kst #- timedelta(days=1)
     d2_date = d1_date   - timedelta(days=1)
 
+    mtd_this = fetch_mtd_total_cur(athena, d1_date)
+    forecast, forecast_source = fetch_forecast_or_estimate(ce, mtd_this, d1_date)
+
     return {
-        'd1_date':        d1_date,
-        'daily_d1':       fetch_daily_by_service_cur(athena, d1_date),
-        'daily_d2':       fetch_daily_by_service_cur(athena, d2_date),
-        'by_creator':     fetch_daily_by_service_and_creator_cur(athena, d1_date),
-        'by_creator_mtd': fetch_mtd_by_service_and_creator_cur(athena, d1_date),
-        'by_region':      fetch_daily_by_service_and_region_cur(athena, d1_date),
-        'by_region_mtd':  fetch_mtd_by_service_and_region_cur(athena, d1_date),
-        'mtd_this':       fetch_mtd_total_cur(athena, d1_date),
-        'forecast':       fetch_cost_forecast(ce),
+        'd1_date':         d1_date,
+        'daily_d1':        fetch_daily_by_service_cur(athena, d1_date),
+        'daily_d2':        fetch_daily_by_service_cur(athena, d2_date),
+        'by_creator':      fetch_daily_by_service_and_creator_cur(athena, d1_date),
+        'by_creator_mtd':  fetch_mtd_by_service_and_creator_cur(athena, d1_date),
+        'by_region':       fetch_daily_by_service_and_region_cur(athena, d1_date),
+        'by_region_mtd':   fetch_mtd_by_service_and_region_cur(athena, d1_date),
+        'mtd_this':        mtd_this,
+        'forecast':        forecast,
+        'forecast_source': forecast_source,
     }

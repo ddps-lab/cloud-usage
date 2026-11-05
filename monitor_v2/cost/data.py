@@ -220,6 +220,37 @@ def fetch_cost_forecast(ce) -> float:
         return 0.0
 
 
+def estimate_remaining(mtd_this: float, d1_date: date) -> float:
+    """
+    CE forecast 를 못 받을 때 쓰는 자체 추정: 이번 달 일평균 x 남은 일수.
+
+    일평균 = d1 까지의 이번 달 누계 / d1 의 일자, 남은 일수 = d1 다음 날 ~ 말일.
+    누계가 없거나 d1 이 말일이면 0.0 (추정할 것이 없다).
+    """
+    if mtd_this <= 0:
+        return 0.0
+    remaining_days = monthrange(d1_date.year, d1_date.month)[1] - d1_date.day
+    return mtd_this / d1_date.day * remaining_days
+
+
+def fetch_forecast_or_estimate(ce, mtd_this: float, d1_date: date) -> tuple:
+    """
+    잔여 예상 비용과 그 출처를 돌려준다: (forecast, 'CE' | 'ESTIMATE' | None).
+
+    2026-11 부터 이 계정은 MSP 빌링(Billing Transfer)으로 CE 가 pro forma 기록만 갖고,
+    GetCostForecast 가 "Insufficient amount of historical data" 로 실패한다.
+    그동안 "예측 없음" 대신 estimate_remaining 의 자체 추정을 쓰고, CE 가 다시 값을
+    주면 자동으로 CE 값으로 돌아간다.
+    """
+    forecast = fetch_cost_forecast(ce)
+    if forecast > 0:
+        return forecast, 'CE'
+    estimate = estimate_remaining(mtd_this, d1_date)
+    if estimate > 0:
+        return estimate, 'ESTIMATE'
+    return 0.0, None
+
+
 def fetch_mtd_total(ce, period: dict) -> float:
     """
     MTD 기간 총 비용 (GroupBy 없이 전체 합산).
@@ -267,6 +298,7 @@ def collect_all(today_kst: date) -> dict:
             'by_region_mtd':  dict,  # {service: {region: float}} MTD (d1_date 기준 월)
             'mtd_this':       float, # d1_date 기준 월 MTD 총비용
             'forecast':       float, # today_kst~말일 잔여 예상 비용 (0.0이면 예측 불가)
+            'forecast_source': 'CE' | 'ESTIMATE' | None,  # fetch_forecast_or_estimate
         }
         ※ CE forecast API는 GroupBy 미지원 → 서비스별 예측은 MTD 비율로 비례 배분 (report.py)
     """
@@ -285,14 +317,18 @@ def collect_all(today_kst: date) -> dict:
         'End':   (d1_date + timedelta(days=1)).strftime('%Y-%m-%d'),
     }
 
+    mtd_this = fetch_mtd_total(ce, period_mtd_this)
+    forecast, forecast_source = fetch_forecast_or_estimate(ce, mtd_this, d1_date)
+
     return {
-        'd1_date':        d1_date,
-        'daily_d1':       fetch_daily_by_service(ce, period_d1),
-        'daily_d2':       fetch_daily_by_service(ce, period_d2),
-        'by_creator':     fetch_daily_by_service_and_creator(ce, period_d1),
-        'by_creator_mtd': fetch_mtd_by_service_and_creator(ce, period_mtd_this),
-        'by_region':      fetch_daily_by_service_and_region(ce, period_d1),
-        'by_region_mtd':  fetch_mtd_by_service_and_region(ce, period_mtd_this),
-        'mtd_this':       fetch_mtd_total(ce, period_mtd_this),
-        'forecast':       fetch_cost_forecast(ce),
+        'd1_date':         d1_date,
+        'daily_d1':        fetch_daily_by_service(ce, period_d1),
+        'daily_d2':        fetch_daily_by_service(ce, period_d2),
+        'by_creator':      fetch_daily_by_service_and_creator(ce, period_d1),
+        'by_creator_mtd':  fetch_mtd_by_service_and_creator(ce, period_mtd_this),
+        'by_region':       fetch_daily_by_service_and_region(ce, period_d1),
+        'by_region_mtd':   fetch_mtd_by_service_and_region(ce, period_mtd_this),
+        'mtd_this':        mtd_this,
+        'forecast':        forecast,
+        'forecast_source': forecast_source,
     }

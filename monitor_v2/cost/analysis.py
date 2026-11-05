@@ -10,7 +10,7 @@ LLM 입력 데이터 (AI 요약용):
     Q15  fetch_month_new_costs
          이번 달 들어 처음 발생한 큰 비용 항목
          → ▲ 이번 달 신규 발생 섹션 데이터
-    MTD  fetch_mtd_total_cur + fetch_cost_forecast
+    MTD  fetch_mtd_total_cur + fetch_forecast_or_estimate
          이번 달 누계 + 월말 예상 → 월간 맥락 단락
 
 Slack 테이블 raw 데이터 (LLM 입력 X, 표만 노출):
@@ -40,7 +40,7 @@ from .data_cur import (
     fetch_daily_by_service_cur,
     _build_creator_case_sql,
 )
-from .data import fetch_cost_forecast
+from .data import fetch_forecast_or_estimate
 
 log = logging.getLogger(__name__)
 
@@ -1536,7 +1536,7 @@ def collect_all(d1_date: date) -> dict:
         Q16  fetch_service_mtd_breakdown          — 서비스별 MTD pace
         Q17  fetch_mtd_top_users_with_breakdown   — 이번 달 누계 Top 사용자 + 서비스 분해
         MTD  fetch_mtd_total_cur                  — 이번 달 누계
-        FCST fetch_cost_forecast (CE)             — 월말 예상
+        FCST fetch_forecast_or_estimate           — 월말 예상 (CE, 실패하면 자체 추정)
 
     Slack 테이블 raw 데이터로만 사용 (LLM 미입력):
         Q9, Q10, Q11
@@ -1557,6 +1557,7 @@ def collect_all(d1_date: date) -> dict:
             'mtd_total':         float,
             'mtd_days_elapsed':  int,
             'forecast_total':    float,
+            'forecast_source':   'CE' | 'ESTIMATE' | None,
             'summary':           str,
             'llm_error':         Exception | None,  # Bedrock 호출 실패 시 잡힌 예외
             'data_source':       'CUR' | 'CE',
@@ -1598,12 +1599,13 @@ def collect_all(d1_date: date) -> dict:
     mtd_total       = raw['mtd_total']
     mtd_days_elapsed = d1_date.day
 
-    # CE Forecast = "오늘부터 월말까지" 예상. mtd_total + forecast = 월말 총 예상
+    # forecast = 남은 날의 예상 비용. mtd_total + forecast = 월말 총 예상.
+    # CE forecast 가 실패하면 이번 달 일평균 x 남은 일수로 추정한다 (forecast_source='ESTIMATE').
     try:
-        forecast = fetch_cost_forecast(ce)
+        forecast, forecast_source = fetch_forecast_or_estimate(ce, mtd_total, d1_date)
     except Exception as exc:
         log.warning("CE forecast 실패 (무시): %s", exc)
-        forecast = 0.0
+        forecast, forecast_source = 0.0, None
     forecast_total = mtd_total + forecast if forecast > 0 else 0.0
 
     # LLM 호출 실패 시 메인 메시지 발송은 fallback 텍스트로 진행하되,
@@ -1644,6 +1646,7 @@ def collect_all(d1_date: date) -> dict:
         'mtd_total':         mtd_total,
         'mtd_days_elapsed':  mtd_days_elapsed,
         'forecast_total':    forecast_total,
+        'forecast_source':   forecast_source,
         'summary':           summary,
         'top_users_section': top_users_section,
         'new_costs_section': new_costs_section,
